@@ -44,6 +44,7 @@ FUNCTIONS:
       UserspaceClose
       UserspaceRead
       UserspaceWrite
+      UserspacePoll
 
    Initializer and destructor
       RegisterQMIDevice
@@ -168,6 +169,7 @@ struct file_operations UserspaceQMIFops =
 #endif
    .open      = UserspaceOpen,
    .flush     = UserspaceClose,
+   .poll      = UserspacePoll,
 };
 
 /*=========================================================================*/
@@ -508,6 +510,9 @@ void ReadCallback( struct urb * pReadURB )
                                  pClientMem->mClientID,
                                  transactionID );
 
+         // Possibly notify poll() that data exists
+         wake_up_interruptible( &pClientMem->mWaitQueue );
+
          // Not a broadcast
          if (clientID >> 8 != 0xff)
          {
@@ -660,6 +665,8 @@ int StartRead( sGobiUSBNet * pDev )
    if (pDev->mQMIDev.mpIntURB == NULL)
    {
       DBG( "Error allocating int urb\n" );
+      usb_free_urb( pDev->mQMIDev.mpReadURB );
+      pDev->mQMIDev.mpReadURB = NULL;
       return -ENOMEM;
    }
 
@@ -668,6 +675,10 @@ int StartRead( sGobiUSBNet * pDev )
    if (pDev->mQMIDev.mpReadBuffer == NULL)
    {
       DBG( "Error allocating read buffer\n" );
+      usb_free_urb( pDev->mQMIDev.mpIntURB );
+      pDev->mQMIDev.mpIntURB = NULL;
+      usb_free_urb( pDev->mQMIDev.mpReadURB );
+      pDev->mQMIDev.mpReadURB = NULL;
       return -ENOMEM;
    }
    
@@ -675,6 +686,12 @@ int StartRead( sGobiUSBNet * pDev )
    if (pDev->mQMIDev.mpIntBuffer == NULL)
    {
       DBG( "Error allocating int buffer\n" );
+      kfree( pDev->mQMIDev.mpReadBuffer );
+      pDev->mQMIDev.mpReadBuffer = NULL;
+      usb_free_urb( pDev->mQMIDev.mpIntURB );
+      pDev->mQMIDev.mpIntURB = NULL;
+      usb_free_urb( pDev->mQMIDev.mpReadURB );
+      pDev->mQMIDev.mpReadURB = NULL;
       return -ENOMEM;
    }      
    
@@ -683,6 +700,14 @@ int StartRead( sGobiUSBNet * pDev )
    if (pDev->mQMIDev.mpReadSetupPacket == NULL)
    {
       DBG( "Error allocating setup packet buffer\n" );
+      kfree( pDev->mQMIDev.mpIntBuffer );
+      pDev->mQMIDev.mpIntBuffer = NULL;
+      kfree( pDev->mQMIDev.mpReadBuffer );
+      pDev->mQMIDev.mpReadBuffer = NULL;
+      usb_free_urb( pDev->mQMIDev.mpIntURB );
+      pDev->mQMIDev.mpIntURB = NULL;
+      usb_free_urb( pDev->mQMIDev.mpReadURB );
+      pDev->mQMIDev.mpReadURB = NULL;
       return -ENOMEM;
    }
 
@@ -1262,7 +1287,7 @@ RETURN VALUE:
          Negative errno for error
 ===========================================================================*/
 int GetClientID( 
-   sGobiUSBNet *    pDev,
+   sGobiUSBNet *      pDev,
    u8                 serviceType )
 {
    u16 clientID;
@@ -1381,6 +1406,8 @@ int GetClientID(
    (*ppClientMem)->mpURBList = NULL;
    (*ppClientMem)->mpNext = NULL;
 
+   // Initialize workqueue for poll()
+   init_waitqueue_head( &(*ppClientMem)->mWaitQueue );
 
    // End Critical section
    spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
@@ -1861,7 +1888,7 @@ RETURN VALUE:
    bool
 ===========================================================================*/
 bool NotifyAndPopNotifyList( 
-   sGobiUSBNet *      pDev,
+   sGobiUSBNet *        pDev,
    u16                  clientID,
    u16                  transactionID )
 {
@@ -1920,7 +1947,6 @@ bool NotifyAndPopNotifyList(
          pDelNotifyList->mpNotifyFunct( pDev,
                                         clientID,
                                         pDelNotifyList->mpData );
-                                        
          // Restore lock
          spin_lock( &pDev->mQMIDev.mClientMemLock );
       }
@@ -2493,6 +2519,82 @@ ssize_t UserspaceWrite(
    {
       return status;
    }
+}
+
+/*===========================================================================
+METHOD:
+   UserspacePoll (Public Method)
+
+DESCRIPTION:
+   Used to determine if read/write operations are possible without blocking
+
+PARAMETERS
+   pFilp              [ I ] - userspace file descriptor
+   pPollTable         [I/O] - Wait object to notify the kernel when data 
+                              is ready
+
+RETURN VALUE:
+   unsigned int - bitmask of what operations can be done imediatly
+===========================================================================*/
+unsigned int UserspacePoll(
+   struct file *                  pFilp,
+   struct poll_table_struct *     pPollTable )
+{
+   sQMIFilpStorage * pFilpData = (sQMIFilpStorage *)pFilp->private_data;
+   sClientMemList * pClientMem;
+   unsigned long flags;
+
+   // Always ready to write
+   unsigned long status = POLLOUT | POLLWRNORM;
+
+   if (pFilpData == NULL)
+   {
+      DBG( "Bad file data\n" );
+      return POLLERR;
+   }
+
+   if (IsDeviceValid( pFilpData->mpDev ) == false)
+   {
+      DBG( "Invalid device! Updating f_ops\n" );
+      pFilp->f_op = pFilp->f_dentry->d_inode->i_fop;
+      return POLLERR;
+   }
+
+   if (pFilpData->mClientID == (u16)-1)
+   {
+      DBG( "Client ID must be set before polling 0x%04X\n",
+           pFilpData->mClientID );
+      return POLLERR;
+   }
+
+   // Critical section
+   spin_lock_irqsave( &pFilpData->mpDev->mQMIDev.mClientMemLock, flags );
+
+   // Get this client's memory location
+   pClientMem = FindClientMem( pFilpData->mpDev, 
+                               pFilpData->mClientID );
+   if (pClientMem == NULL)
+   {
+      DBG( "Could not find this client's memory 0x%04X\n",
+           pFilpData->mClientID );
+
+      spin_unlock_irqrestore( &pFilpData->mpDev->mQMIDev.mClientMemLock, 
+                              flags );
+      return POLLERR;
+   }
+   
+   poll_wait( pFilp, &pClientMem->mWaitQueue, pPollTable );
+
+   if (pClientMem->mpList != NULL)
+   {
+      status |= POLLIN | POLLRDNORM;
+   }
+
+   // End critical section
+   spin_unlock_irqrestore( &pFilpData->mpDev->mQMIDev.mClientMemLock, flags );
+
+   // Always ready to write 
+   return (status | POLLOUT | POLLWRNORM);
 }
 
 /*=========================================================================*/

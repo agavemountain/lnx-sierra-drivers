@@ -1,5 +1,5 @@
-Gobi3000 network driver 1.0.50
-05/18/2011
+Gobi3000 network driver 1.0.60
+06/29/2011
 
 This readme covers important information concerning 
 the Gobi Net driver.
@@ -15,7 +15,12 @@ Table of Contents
 
 1. WHAT'S NEW
 
-This Release (Gobi3000 network driver 1.0.50) 05/18/2011
+This Release (Gobi3000 network driver 1.0.60) 06/29/2011
+a. Add UserspacePoll() function, to support select()
+b. Fix possible deadlock on GobiUSBNetTXTimeout()
+c. Fix memory leak on data transmission
+
+Prior Release (Gobi3000 network driver 1.0.50) 05/18/2011
 a. Add support for kernels up to 2.6.38
 b. Add support for dynamic interface binding
 

@@ -90,8 +90,8 @@ POSSIBILITY OF SUCH DAMAGE.
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "1.0.50"
-#define DRIVER_AUTHOR "Qualcomm Innovation Center"
+#define DRIVER_VERSION "1.0.60"
+#define DRIVER_AUTHOR "Code Aurora Forum"
 #define DRIVER_DESC "GobiNet"
 
 // Debug flag
@@ -542,6 +542,7 @@ void GobiUSBNetTXTimeout( struct net_device * pNet )
    sURBList * pURBListEntry;
    unsigned long activeURBflags, URBListFlags;
    struct usbnet * pDev = netdev_priv( pNet );
+   struct urb * pURB;
 
    if (pDev == NULL || pDev->net == NULL)
    {
@@ -559,15 +560,16 @@ void GobiUSBNetTXTimeout( struct net_device * pNet )
 
    DBG( "\n" );
 
-   // Stop activeURB
+   // Grab a pointer to active URB
    spin_lock_irqsave( &pAutoPM->mActiveURBLock, activeURBflags );
-
-   if (pAutoPM->mpActiveURB != NULL)
-   {
-      usb_kill_urb( pAutoPM->mpActiveURB );
-   }
-
+   pURB = pAutoPM->mpActiveURB;
    spin_unlock_irqrestore( &pAutoPM->mActiveURBLock, activeURBflags );
+
+   // Stop active URB
+   if (pURB != NULL)
+   {
+      usb_kill_urb( pURB );
+   }
 
    // Cleanup URB List
    spin_lock_irqsave( &pAutoPM->mURBListLock, URBListFlags );
@@ -610,6 +612,8 @@ static int GobiUSBNetAutoPMThread( void * pData )
    int status;
    struct usb_device * pUdev;
    sAutoPM * pAutoPM = (sAutoPM *)pData;
+   struct urb * pURB;
+
    if (pAutoPM == NULL)
    {
       DBG( "passed null pointer\n" );
@@ -630,14 +634,14 @@ static int GobiUSBNetAutoPMThread( void * pData )
       {
          // Stop activeURB
          spin_lock_irqsave( &pAutoPM->mActiveURBLock, activeURBflags );
+         pURB = pAutoPM->mpActiveURB;
+         spin_unlock_irqrestore( &pAutoPM->mActiveURBLock, activeURBflags );
 
-         if (pAutoPM->mpActiveURB != NULL)
+         if (pURB != NULL)
          {
-            usb_kill_urb( pAutoPM->mpActiveURB );
+            usb_kill_urb( pURB );
          }
          // Will be freed in callback function
-
-         spin_unlock_irqrestore( &pAutoPM->mActiveURBLock, activeURBflags );
 
          // Cleanup URB List
          spin_lock_irqsave( &pAutoPM->mURBListLock, URBListFlags );
@@ -819,6 +823,7 @@ int GobiUSBNetStartXmit(
    if (pURBListEntry->mpURB == NULL)
    {
       DBG( "unable to allocate URB\n" );
+      kfree( pURBListEntry );
       return NETDEV_TX_BUSY;
    }
 
@@ -827,6 +832,8 @@ int GobiUSBNetStartXmit(
    if (pURBData == NULL)
    {
       DBG( "unable to allocate URB data\n" );
+      usb_free_urb( pURBListEntry->mpURB );
+      kfree( pURBListEntry );
       return NETDEV_TX_BUSY;
    }
    // Fill will SKB's data
@@ -839,7 +846,10 @@ int GobiUSBNetStartXmit(
                       pSKB->len,
                       GobiUSBNetURBCallback,
                       pAutoPM );
-   
+
+   // Free the transfer buffer on last reference dropped
+   pURBListEntry->mpURB->transfer_flags |= URB_FREE_BUFFER;
+
    // Aquire lock on URBList
    spin_lock_irqsave( &pAutoPM->mURBListLock, URBListFlags );
    

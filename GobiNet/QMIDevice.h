@@ -44,6 +44,7 @@ FUNCTIONS:
       UserspaceClose
       UserspaceRead
       UserspaceWrite
+      UserspacePoll
 
    Initializer and destructor
       RegisterQMIDevice
@@ -303,6 +304,10 @@ ssize_t UserspaceWrite(
    const char __user *  pBuf, 
    size_t               size,
    loff_t *             pUnusedFpos );
+
+unsigned int UserspacePoll(
+   struct file *                  pFilp,
+   struct poll_table_struct *     pPollTable );
 
 /*=========================================================================*/
 // Initializer and destructor
