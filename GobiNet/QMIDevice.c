@@ -55,7 +55,7 @@ FUNCTIONS:
       SetupQMIWDSCallback
       QMIDMSGetMEID
 
-Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -2218,7 +2218,6 @@ int UserspaceClose(
    fl_owner_t          unusedFileTable )
 {
    sQMIFilpStorage * pFilpData = (sQMIFilpStorage *)pFilp->private_data;
-   struct list_head * pTasks;
    struct task_struct * pEachTask;
    struct fdtable * pFDT;
    int count = 0;
@@ -2234,11 +2233,9 @@ int UserspaceClose(
    // Fallthough.  If f_count == 1 no need to do more checks
    if (atomic_read( &pFilp->f_count ) != 1)
    {
-      // "group_leader" points to the main process' task, which resides in
-      // the global "tasks" list.
-      list_for_each( pTasks, &current->group_leader->tasks )
+      rcu_read_lock();
+      for_each_process( pEachTask )
       {
-         pEachTask = container_of( pTasks, struct task_struct, tasks );
          if (pEachTask == NULL || pEachTask->files == NULL)
          {
             // Some tasks may not have files (e.g. Xsession)
@@ -2259,6 +2256,7 @@ int UserspaceClose(
          }
          spin_unlock_irqrestore( &pEachTask->files->file_lock, flags );
       }
+      rcu_read_unlock();
       
       if (used > 0)
       {
@@ -2606,7 +2604,6 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
 {
    struct inode * pOpenInode;
    struct list_head * pInodeList;
-   struct list_head * pTasks;
    struct task_struct * pEachTask;
    struct fdtable * pFDT;
    struct file * pFilp;
@@ -2653,11 +2650,9 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
       {
          // Look for this inode in each task
 
-         // "group_leader" points to the main process' task, which resides in
-         // the global "tasks" list.
-         list_for_each( pTasks, &current->group_leader->tasks )
+         rcu_read_lock();
+         for_each_process( pEachTask )
          {
-            pEachTask = container_of( pTasks, struct task_struct, tasks );
             if (pEachTask == NULL || pEachTask->files == NULL)
             {
                // Some tasks may not have files (e.g. Xsession)
@@ -2687,6 +2682,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
             }
             spin_unlock_irqrestore( &pEachTask->files->file_lock, flags );
          }
+         rcu_read_unlock();
       }
    }
 

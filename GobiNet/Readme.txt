@@ -1,5 +1,5 @@
-Gobi3000 network driver 1.0.20
-11/01/2010
+Gobi3000 network driver 1.0.30
+01/05/2011
 
 This readme covers important information concerning 
 the Gobi Net driver.
@@ -15,7 +15,11 @@ Table of Contents
 
 1. WHAT'S NEW
 
-This Release (Gobi3000 network driver 1.0.20) 11/01/2010
+This Release (Gobi3000 network driver 1.0.30) 01/05/2011
+a. Fix rare kernel PANIC if a process terminates while file handle close 
+   or device removal is in progress.
+
+Prior Release (Gobi3000 network driver 1.0.20) 11/01/2010
 a. Fix possible kernel WARNING if device removed before QCWWANDisconnect().
 b. Fix multiple memory leaks in error cases.
 

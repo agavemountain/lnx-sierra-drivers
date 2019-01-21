@@ -13,7 +13,7 @@ PUBLIC DRIVER FUNCTIONS:
    GobiSuspend
    GobiResume (if kernel is less than 2.6.24)
 
-Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -83,7 +83,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "1.0.10"
+#define DRIVER_VERSION "1.0.20"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -278,7 +278,7 @@ static int GobiProbe(
    if (nNumInterfaces == 1)
    {
       // QDL mode?
-      if (nInterfaceNum == 1) 
+      if (nInterfaceNum == 1 || nInterfaceNum == 0) 
       {
          DBG( "QDL port found\n" );
          nRetval = usb_set_interface( pSerial->dev, 

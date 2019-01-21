@@ -1,5 +1,5 @@
-Gobi3000 Serial driver for 1.0.10
-09/17/2010
+Gobi3000 Serial driver for 1.0.20
+01/05/2011
 
 This readme covers important information concerning 
 the Gobi Serial driver.
@@ -15,7 +15,11 @@ Table of Contents
 
 1. WHAT'S NEW
 
-This Release (Gobi3000 Serial driver 1.0.10) 09/17/2010
+This Release (Gobi3000 Serial driver 1.0.20) 01/05/2011
+a. Add support for QDL port on interface 0 (enumeration changed in 
+   firmware 1575 and later).
+
+Prior Release (Gobi3000 Serial driver 1.0.10) 09/17/2010
 a. Initial release
 
 -------------------------------------------------------------------------------
