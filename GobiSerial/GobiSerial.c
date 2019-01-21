@@ -83,7 +83,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "1.0.20"
+#define DRIVER_VERSION "1.0.30"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -100,12 +100,12 @@ static int debug;
    void (* gpClose)( 
       struct usb_serial_port *,
       struct file * );
-#elif (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,29 ))
+#elif (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,30 ))
    void (* gpClose)( 
       struct tty_struct *,
       struct usb_serial_port *,
       struct file * );
-#else // > 2.6.29
+#else // > 2.6.30
    void (* gpClose)( struct usb_serial_port * );
 #endif
 
@@ -146,12 +146,12 @@ static int GobiProbe(
    void GobiClose( 
       struct usb_serial_port *,
       struct file * );
-#elif (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,29 ))
+#elif (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,30 ))
    void GobiClose( 
       struct tty_struct *,
       struct usb_serial_port *,
       struct file * );
-#else // > 2.6.29
+#else // > 2.6.30
    void GobiClose( struct usb_serial_port * );
 #endif
 
@@ -428,20 +428,20 @@ DESCRIPTION:
    Stop GPS if GPS port, run usb_serial_generic_close
 
 PARAMETERS:
-   pTTY    [ I ] - TTY structure (only if kernel > 2.6.26 and <= 2.6.29)
+   pTTY    [ I ] - TTY structure (only if kernel > 2.6.26 and <= 2.6.30)
    pPort   [ I ] - USB serial port structure
-   pFilp   [ I ] - File structure (only on kernel <= 2.6.29)
+   pFilp   [ I ] - File structure (only on kernel <= 2.6.30)
 ===========================================================================*/
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,26 ))
 void GobiClose(
    struct usb_serial_port *   pPort,
    struct file *              pFilp )
-#elif (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,29 ))
+#elif (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,30 ))
 void GobiClose(
    struct tty_struct *        pTTY,
    struct usb_serial_port *   pPort,
    struct file *              pFilp )
-#else // > 2.6.29
+#else // > 2.6.30
 void GobiClose( struct usb_serial_port * pPort )
 #endif
 {
@@ -494,9 +494,9 @@ void GobiClose( struct usb_serial_port * pPort )
    
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,26 ))
    gpClose( pPort, pFilp );
-#elif (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,29 ))
+#elif (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,30 ))
    gpClose( pTTY, pPort, pFilp );
-#else // > 2.6.29
+#else // > 2.6.30
    gpClose( pPort );
 #endif
 }

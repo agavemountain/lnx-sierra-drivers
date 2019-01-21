@@ -6,6 +6,7 @@ DESCRIPTION:
    Qualcomm USB Network device for Gobi 3000
    
 FUNCTIONS:
+   GatherEndpoints
    GobiSuspend
    GobiResume
    GobiNetDriverBind
@@ -89,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "1.0.40"
+#define DRIVER_VERSION "1.0.50"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 
@@ -101,6 +102,82 @@ int interruptible = 1;
 
 // Class should be created during module init, so needs to be global
 static struct class * gpClass;
+
+/*===========================================================================
+METHOD:
+   GatherEndpoints (Public Method)
+
+DESCRIPTION:
+   Enumerate endpoints
+
+PARAMETERS
+   pIntf          [ I ] - Pointer to usb interface
+
+RETURN VALUE:
+   sEndpoints structure
+              NULL for failure
+===========================================================================*/
+sEndpoints * GatherEndpoints( struct usb_interface * pIntf )
+{
+   int numEndpoints;
+   int endpointIndex;
+   sEndpoints * pOut;
+   struct usb_host_endpoint * pEndpoint = NULL;
+   
+   pOut = kzalloc( sizeof( sEndpoints ), GFP_ATOMIC );
+   if (pOut == NULL)
+   {
+      DBG( "unable to allocate memory\n" );
+      return NULL;
+   }
+
+   pOut->mIntfNum = pIntf->cur_altsetting->desc.bInterfaceNumber;
+   
+   // Scan endpoints
+   numEndpoints = pIntf->cur_altsetting->desc.bNumEndpoints;
+   for (endpointIndex = 0; endpointIndex < numEndpoints; endpointIndex++)
+   {
+      pEndpoint = pIntf->cur_altsetting->endpoint + endpointIndex;
+      if (pEndpoint == NULL)
+      {
+         DBG( "invalid endpoint %u\n", endpointIndex );
+         kfree( pOut );
+         return NULL;
+      }
+      
+      if (usb_endpoint_dir_in( &pEndpoint->desc ) == true
+      &&  usb_endpoint_xfer_int( &pEndpoint->desc ) == true)
+      {
+         pOut->mIntInEndp = pEndpoint->desc.bEndpointAddress;
+      }
+      else if (usb_endpoint_dir_in( &pEndpoint->desc ) == true
+      &&  usb_endpoint_xfer_int( &pEndpoint->desc ) == false)
+      {
+         pOut->mBlkInEndp = pEndpoint->desc.bEndpointAddress;
+      }
+      else if (usb_endpoint_dir_in( &pEndpoint->desc ) == false
+      &&  usb_endpoint_xfer_int( &pEndpoint->desc ) == false)
+      {
+         pOut->mBlkOutEndp = pEndpoint->desc.bEndpointAddress;
+      }
+   }
+
+   if (pOut->mIntInEndp == 0
+   ||  pOut->mBlkInEndp == 0
+   ||  pOut->mBlkOutEndp == 0)
+   {
+      DBG( "One or more endpoints missing\n" );
+      kfree( pOut );
+      return NULL;
+   }
+
+   DBG( "intf %u\n", pOut->mIntfNum );
+   DBG( "   int in  0x%02x\n", pOut->mIntInEndp );
+   DBG( "   blk in  0x%02x\n", pOut->mBlkInEndp );
+   DBG( "   blk out 0x%02x\n", pOut->mBlkOutEndp );
+
+   return pOut;
+}
 
 /*===========================================================================
 METHOD:
@@ -393,6 +470,11 @@ static void GobiNetDriverUnbind(
    pIntf->dev.platform_data = NULL;
 #endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,19 ))
+   pIntf->needs_remote_wakeup = 0;
+#endif
+
+   kfree( pGobiDev->mpEndpoints );
    kfree( pGobiDev );
    pGobiDev = NULL;
 }
@@ -970,9 +1052,16 @@ int GobiUSBNetProbe(
    int status;
    struct usbnet * pDev;
    sGobiUSBNet * pGobiDev;
+   sEndpoints * pEndpoints;
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,29 ))
    struct net_device_ops * pNetDevOps;
 #endif
+
+   pEndpoints = GatherEndpoints( pIntf );
+   if (pEndpoints == NULL)
+   {
+      return -ENODEV;
+   }      
 
    status = usbnet_probe( pIntf, pVIDPIDs );
    if (status < 0)
@@ -980,6 +1069,10 @@ int GobiUSBNetProbe(
       DBG( "usbnet_probe failed %d\n", status );
       return status;
    }
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,19 ))
+   pIntf->needs_remote_wakeup = 1;
+#endif
 
 #if (LINUX_VERSION_CODE > KERNEL_VERSION( 2,6,23 ))
    pDev = usb_get_intfdata( pIntf );
@@ -991,6 +1084,7 @@ int GobiUSBNetProbe(
    {
       DBG( "failed to get netdevice\n" );
       usbnet_disconnect( pIntf );
+      kfree( pEndpoints );
       return -ENXIO;
    }
 
@@ -999,12 +1093,14 @@ int GobiUSBNetProbe(
    {
       DBG( "falied to allocate device buffers" );
       usbnet_disconnect( pIntf );
+      kfree( pEndpoints );
       return -ENOMEM;
    }
    
    pDev->data[0] = (unsigned long)pGobiDev;
    
    pGobiDev->mpNetDev = pDev;
+   pGobiDev->mpEndpoints = pEndpoints;
 
    // Overload PM related network functions
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,29 ))

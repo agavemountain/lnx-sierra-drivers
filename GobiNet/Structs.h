@@ -302,6 +302,27 @@ typedef struct sQMIDev
 } sQMIDev;
 
 /*=========================================================================*/
+// Struct sEndpoints
+//
+//    Structure that defines the endpoints of the device
+/*=========================================================================*/
+typedef struct sEndpoints
+{
+   /* Interface number */
+   unsigned               mIntfNum;
+
+   /* Interrupt in endpoint */
+   unsigned               mIntInEndp;
+
+   /* Bulk in endpoint */
+   unsigned               mBlkInEndp;
+
+   /* Bulk out endpoint */
+   unsigned               mBlkOutEndp;
+
+} sEndpoints;
+
+/*=========================================================================*/
 // Struct sGobiUSBNet
 //
 //    Structure that defines the data associated with the Qualcomm USB device
@@ -313,7 +334,10 @@ typedef struct sGobiUSBNet
 
    /* Usb device interface */
    struct usb_interface * mpIntf;
-   
+
+   /* Endpoint numbers */
+   sEndpoints *           mpEndpoints;
+
    /* Pointers to usbnet_open and usbnet_stop functions */
    int                  (* mpUSBNetOpen)(struct net_device *);
    int                  (* mpUSBNetStop)(struct net_device *);
