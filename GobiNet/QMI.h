@@ -3,7 +3,7 @@ FILE:
    QMI.h
 
 DESCRIPTION:
-   QMI driver header
+   Qualcomm QMI driver header
    
 FUNCTIONS:
    Generic QMUX functions

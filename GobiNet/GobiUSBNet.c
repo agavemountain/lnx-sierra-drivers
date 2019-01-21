@@ -3,7 +3,7 @@ FILE:
    GobiUSBNet.c
 
 DESCRIPTION:
-   USB Network device for Gobi 3000
+   Qualcomm USB Network device for Gobi 3000
    
 FUNCTIONS:
    GobiSuspend
@@ -89,7 +89,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "1.0.10"
+#define DRIVER_VERSION "1.0.20"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 
@@ -929,7 +929,7 @@ static const struct driver_info GobiNetInfo =
 };
 
 /*=========================================================================*/
-// Gobi 3000 VID/PIDs
+// Qualcomm Gobi 3000 VID/PIDs
 /*=========================================================================*/
 static const struct usb_device_id GobiVIDPIDTable [] =
 {
@@ -972,7 +972,7 @@ int GobiUSBNetProbe(
 #endif
 
    status = usbnet_probe( pIntf, pVIDPIDs );
-   if(status < 0 )
+   if (status < 0)
    {
       DBG( "usbnet_probe failed %d\n", status );
       return status;

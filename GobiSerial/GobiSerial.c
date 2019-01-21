@@ -3,7 +3,7 @@ FILE:
    GobiSerial.c
 
 DESCRIPTION:
-   Linux QMI Serial USB driver Implementation 
+   Linux Qualcomm Serial USB driver Implementation 
 
 PUBLIC DRIVER FUNCTIONS:
    GobiProbe
@@ -175,12 +175,12 @@ int GobiResume( struct usb_interface * pIntf );
 #endif
 
 /*=========================================================================*/
-// Gobi 3000 VID/PIDs
+// Qualcomm Gobi 3000 VID/PIDs
 /*=========================================================================*/
 static struct usb_device_id GobiVIDPIDTable[] = 
 {
-   { USB_DEVICE(0x05c6, 0x920c) },   // Gobi 3000 QDL device
-   { USB_DEVICE(0x05c6, 0x920d) },   // Gobi 3000 Composite Device
+   { USB_DEVICE( 0x05c6, 0x920c ) },   // Gobi 3000 QDL device
+   { USB_DEVICE( 0x05c6, 0x920d ) },   // Gobi 3000 Composite Device
    { }                               // Terminating entry
 };
 MODULE_DEVICE_TABLE( usb, GobiVIDPIDTable );

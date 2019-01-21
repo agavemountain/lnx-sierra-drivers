@@ -1,0 +1,51 @@
+Gobi3000 Serial driver for 1.0.10
+09/17/2010
+
+This readme covers important information concerning 
+the Gobi Serial driver.
+
+Table of Contents
+
+1. What's new in this release
+2. Known issues
+3. Known platform issues
+
+
+-------------------------------------------------------------------------------
+
+1. WHAT'S NEW
+
+This Release (Gobi3000 Serial driver 1.0.10) 09/17/2010
+a. Initial release
+
+-------------------------------------------------------------------------------
+
+2. KNOWN ISSUES
+
+No known issues.
+
+-------------------------------------------------------------------------------
+
+3. KNOWN PLATFORM ISSUES
+
+a. If a user attempts to obtain a Simple IP address the device may become
+   unresponsive to AT commands and will need to be restarted.  This may be
+   a result of a problem in one or more of the following open source products:
+      1. pppd daemon
+      2. ppp protocol stack
+      3. USB driver
+   
+   
+b. There is a bug in the open source ehci-hcd driver on kernel 2.6.32
+   and newer caused by commit 403dbd36739e344d2d25f56ebbe342248487bd48.  
+   This change in the ehci-hcd driver made it so Intel USB hubs are trusted
+   to provide hardware interrupts, however some devices do not do so 
+   consistently.  This has been observed as a 2 second delay or no URB 
+   callback at all, resulting in QDL timeouts or a hang in the n_tty_write()
+   function.  This can be corrected by reverting the original commit or 
+   specifying need_io_watchdog = 1 for this USB hub.
+
+-------------------------------------------------------------------------------
+
+
+

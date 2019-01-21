@@ -3,7 +3,7 @@ FILE:
    QMI.c
 
 DESCRIPTION:
-   QMI driver code
+   Qualcomm QMI driver code
    
 FUNCTIONS:
    Generic QMUX functions
@@ -480,8 +480,8 @@ int QMICTLGetClientIDReq(
       // QMI svc type
       *(u8 *)(pBuffer + sizeof( sQMUX ) + 9)  = serviceType;
 
-  // success
-  return sizeof( sQMUX ) + 10;
+   // success
+   return sizeof( sQMUX ) + 10;
 }
 
 /*===========================================================================
@@ -528,8 +528,8 @@ int QMICTLReleaseClientIDReq(
       // QMI svs type / Client ID
       *(u16 *)(pBuffer + sizeof( sQMUX ) + 9)  = clientID;
       
-  // success
-  return sizeof( sQMUX ) + 11;
+   // success
+   return sizeof( sQMUX ) + 11;
 }
 
 /*===========================================================================
@@ -568,8 +568,8 @@ int QMICTLReadyReq(
    // Size of TLV's
    *(u16 *)(pBuffer + sizeof( sQMUX ) + 4) = 0x0000;
 
-  // success
-  return sizeof( sQMUX ) + 6;
+   // success
+   return sizeof( sQMUX ) + 6;
 }
 
 /*===========================================================================
@@ -616,8 +616,8 @@ int QMIWDSSetEventReportReq(
       // Stats mask
       *(u32 *)(pBuffer + sizeof( sQMUX ) + 11)  = 0x000000ff;
 
-  // success
-  return sizeof( sQMUX ) + 15;
+   // success
+   return sizeof( sQMUX ) + 15;
 }
 
 /*===========================================================================
@@ -656,8 +656,8 @@ int QMIWDSGetPKGSRVCStatusReq(
    // Size of TLV's
    *(u16 *)(pBuffer + sizeof( sQMUX ) + 5) = 0x0000;
 
-  // success
-  return sizeof( sQMUX ) + 7;
+   // success
+   return sizeof( sQMUX ) + 7;
 }
 
 /*===========================================================================
@@ -731,7 +731,7 @@ int QMICTLGetClientIDResp(
    //    QMI CTL SDU is 2 bytes, not 3
    u8 offset = sizeof( sQMUX ) + 2;
 
-   if (pBuffer == 0 || buffSize < offset )
+   if (pBuffer == 0 || buffSize < offset)
    {
       return -ENOMEM;
    }
@@ -785,7 +785,7 @@ int QMICTLReleaseClientIDResp(
    //    QMI CTL SDU is 2 bytes, not 3
    u8 offset = sizeof( sQMUX ) + 2;
 
-   if (pBuffer == 0 || buffSize < offset )
+   if (pBuffer == 0 || buffSize < offset)
    {
       return -ENOMEM;
    }
@@ -960,7 +960,7 @@ int QMIDMSGetMEIDResp(
    // Ignore QMUX and SDU
    u8 offset = sizeof( sQMUX ) + 3;
 
-   if (pBuffer == 0 || buffSize < offset || meidSize < 14 )
+   if (pBuffer == 0 || buffSize < offset || meidSize < 14)
    {
       return -ENOMEM;
    }
