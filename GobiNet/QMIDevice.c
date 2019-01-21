@@ -128,6 +128,15 @@ int GobiSuspend(
    struct usb_interface *     pIntf,
    pm_message_t               powerEvent );
 
+// UnlockedUserspacecIOCTL is a simple passthrough to UserspacecIOCTL
+long UnlockedUserspaceIOCTL(
+   struct file *     pFilp,
+   unsigned int      cmd,
+   unsigned long     arg )
+{
+	return UserspaceIOCTL( NULL, pFilp, cmd, arg );
+}
+
 // IOCTL to generate a client ID for this service type
 #define IOCTL_QMI_GET_SERVICE_FILE 0x8BE0 + 1
 
@@ -152,7 +161,11 @@ struct file_operations UserspaceQMIFops =
    .owner     = THIS_MODULE,
    .read      = UserspaceRead,
    .write     = UserspaceWrite,
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,35 ))
    .ioctl     = UserspaceIOCTL,
+#else
+   .unlocked_ioctl = UnlockedUserspaceIOCTL,
+#endif
    .open      = UserspaceOpen,
    .flush     = UserspaceClose,
 };
@@ -552,8 +565,11 @@ void IntCallback( struct urb * pIntURB )
    else
    {
       // CDC GET_ENCAPSULATED_RESPONSE
+      // Endpoint number is the wIndex value, which is the 5th byte in the
+      // CDC GET_ENCAPSULTED_RESPONSE message
       if ((pIntURB->actual_length == 8)
-      &&  (*(u64*)pIntURB->transfer_buffer == CDC_GET_ENCAPSULATED_RESPONSE))
+      &&  (*(u64*)pIntURB->transfer_buffer == CDC_GET_ENCAPSULATED_RESPONSE
+           + (pDev->mpEndpoints->mIntfNum * 0x100000000ll)))
       {
          // Time to read
          usb_fill_control_urb( pDev->mQMIDev.mpReadURB,
@@ -574,8 +590,11 @@ void IntCallback( struct urb * pIntURB )
          return;
       }
       // CDC CONNECTION_SPEED_CHANGE
+      // Endpoint number is the wIndex value, which is the 5th byte in the
+      // CDC CONNECTION_SPEED message
       else if ((pIntURB->actual_length == 16)
-      &&       (*(u64*)pIntURB->transfer_buffer == CDC_CONNECTION_SPEED_CHANGE))
+      &&       (*(u64*)pIntURB->transfer_buffer == CDC_CONNECTION_SPEED_CHANGE
+                + (pDev->mpEndpoints->mIntfNum * 0x100000000ll)))
       {
          // if upstream or downstream is 0, stop traffic.  Otherwise resume it
          if ((*(u32*)(pIntURB->transfer_buffer + 8) == 0)
@@ -671,7 +690,7 @@ int StartRead( sGobiUSBNet * pDev )
    pDev->mQMIDev.mpReadSetupPacket->mRequestType = 0xA1;
    pDev->mQMIDev.mpReadSetupPacket->mRequestCode = 1;
    pDev->mQMIDev.mpReadSetupPacket->mValue = 0;
-   pDev->mQMIDev.mpReadSetupPacket->mIndex = 0;
+   pDev->mQMIDev.mpReadSetupPacket->mIndex = pDev->mpEndpoints->mIntfNum;
    pDev->mQMIDev.mpReadSetupPacket->mLength = DEFAULT_READ_URB_LENGTH;
 
    interval = (pDev->mpNetDev->udev->speed == USB_SPEED_HIGH) ? 7 : 3;
@@ -679,7 +698,8 @@ int StartRead( sGobiUSBNet * pDev )
    // Schedule interrupt URB
    usb_fill_int_urb( pDev->mQMIDev.mpIntURB,
                      pDev->mpNetDev->udev,
-                     usb_rcvintpipe( pDev->mpNetDev->udev, 0x81 ),
+                     usb_rcvintpipe( pDev->mpNetDev->udev,
+                                     pDev->mpEndpoints->mIntInEndp ),
                      pDev->mQMIDev.mpIntBuffer,
                      DEFAULT_READ_URB_LENGTH,
                      IntCallback,
@@ -756,7 +776,7 @@ RETURN VALUE:
          negative errno for failure
 ===========================================================================*/
 int ReadAsync(
-   sGobiUSBNet *    pDev,
+   sGobiUSBNet *      pDev,
    u16                clientID,
    u16                transactionID,
    void               (*pCallback)(sGobiUSBNet*, u16, void *),
@@ -1069,8 +1089,7 @@ int WriteSync(
    writeSetup.mRequestType = 0x21;
    writeSetup.mRequestCode = 0;
    writeSetup.mValue = 0;
-   writeSetup.mIndex = 0;
-   writeSetup.mLength = 0;
+   writeSetup.mIndex = pDev->mpEndpoints->mIntfNum;
    writeSetup.mLength = writeBufferSize;
 
    // Create URB   
@@ -3162,7 +3181,7 @@ int SetupQMIWDSCallback( sGobiUSBNet * pDev )
                              0x22,
                              0x21,
                              1, // DTR present
-                             0,
+                             pDev->mpEndpoints->mIntfNum,
                              NULL,
                              0,
                              100 );

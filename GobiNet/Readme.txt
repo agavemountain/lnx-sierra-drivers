@@ -1,5 +1,5 @@
-Gobi3000 network driver 1.0.40
-02/28/2011
+Gobi3000 network driver 1.0.50
+05/18/2011
 
 This readme covers important information concerning 
 the Gobi Net driver.
@@ -15,11 +15,15 @@ Table of Contents
 
 1. WHAT'S NEW
 
-This Release (Gobi3000 network driver 1.0.40) 02/28/2011
+This Release (Gobi3000 network driver 1.0.50) 05/18/2011
+a. Add support for kernels up to 2.6.38
+b. Add support for dynamic interface binding
+
+Prior Release (Gobi3000 network driver 1.0.40) 02/28/2011
 a. In cases of QMI read errors, discard the error and continue reading.
 b. Add "interruptible" parameter, which may be disabled for debugging purposes.
 
-This Release (Gobi3000 network driver 1.0.30) 01/05/2011
+Prior Release (Gobi3000 network driver 1.0.30) 01/05/2011
 a. Fix rare kernel PANIC if a process terminates while file handle close 
    or device removal is in progress.
 
