@@ -84,7 +84,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 // Version Information
 #define DRIVER_VERSION "1.0.30"
-#define DRIVER_AUTHOR "Qualcomm Innovation Center"
+#define DRIVER_AUTHOR "Code Aurora Forum"
 #define DRIVER_DESC "GobiSerial"
 
 #define NUM_BULK_EPS         1

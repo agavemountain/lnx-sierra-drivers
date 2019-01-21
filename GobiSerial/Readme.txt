@@ -41,8 +41,8 @@ a. If a user attempts to obtain a Simple IP address the device may become
       1. pppd daemon
       2. ppp protocol stack
       3. USB driver
-   
-   
+   In any case, this is not an issue that can be addressed by any software
+   provided by Qualcomm.
 b. There is a bug in the open source ehci-hcd driver on kernel 2.6.32
    and newer caused by commit 403dbd36739e344d2d25f56ebbe342248487bd48.  
    This change in the ehci-hcd driver made it so Intel USB hubs are trusted

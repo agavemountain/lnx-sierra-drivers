@@ -79,6 +79,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/version.h>
 #include <linux/cdev.h>
 #include <linux/kthread.h>
+#include <linux/poll.h>
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,24 ))
    #include "usbnet.h"
@@ -187,6 +188,9 @@ typedef struct sClientMemList
    
    /* Next entry in linked list */
    struct sClientMemList *      mpNext;
+
+   /* Wait queue object for poll() */
+   wait_queue_head_t    mWaitQueue;
 
 } sClientMemList;
 
@@ -376,7 +380,7 @@ typedef struct sQMIFilpStorage
    u16                  mClientID;
    
    /* Device pointer */
-   sGobiUSBNet *          mpDev;
+   sGobiUSBNet *        mpDev;
 
 } sQMIFilpStorage;
 
