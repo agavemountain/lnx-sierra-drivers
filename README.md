@@ -1,27 +1,21 @@
 # lnx-sierra-drivers
-** *Note:* this is *NOT* the official repository. **
-
 This repository contains the GobiNet and GobiSerial device
-drivers for Linux.  These drivers support the Sierra Wireless
-cellular modems.  
+drivers for Linux.  If you use the Sierra SDK, and not the 
+open source main-line drivers, these are the drivers that 
+will be used.
 
-I do not have access to the official code repository, so
-this repository was built from source tar-ball release to
-release, plus my modifications (if any).
+Since I do not have access to the official code repository,
+this repo was built from source tar-ball releases.
 
-The original "official" source releases can be found
+## Original Driver Releases:
+
+The original "official" legacy source releases can be found
 from:
 
-+ **[codeaurora.org](https://portland.source.codeaurora.org/patches/quic/gobi/Gobi3000/OldReleases/) **
++ **[codeaurora.org](https://portland.source.codeaurora.org/patches/quic/gobi/Gobi3000/OldReleases/):** These are the 
+original open source drivers, from 2010.
 
-
-## Resources
-
-- [GobiNet driver provided by Netgear](http://www.downloads.netgear.com/files/aircard/Linux-Support-S2.13N2.25.zip) to support Kernel versions 3.19 and up
-- [Compiling GobiNet on Ubuntu](https://bytefreaks.net/gnulinux/compiling-gobinet-on-ubuntu-16-04-64bit)
-- Vedran Krivokuca's [patch](https://github.com/casastorta/gobiserial-patch/blob/master/GobiSerial.patch) to support later kernel versions for GobiSerial
-
-## Releases (contained herein as individual commits)
+### Releases (contained herein as individual commits)
 
 - Gobi3000Drivers1010_09172010.tar.gz
 - Gobi3000Drivers1020_11042010.tar.gz
@@ -29,5 +23,11 @@ from:
 - Gobi3000Drivers1040_03022011.tar.gz
 - Gobi3000Drivers1050_05192011.tar.gz
 - Gobi3000Drivers1060_06302011.tar.gz
-- GobiNet_2011-07-29-1026.tar.gz
-- GobiSerial_2011-07-29-1026.tar.gz
+
+## Resources
+
+- [GobiNet driver provided by Netgear](http://www.downloads.netgear.com/files/aircard/Linux-Support-S2.13N2.25.zip) to support Kernel versions 3.19 and up
+- [Compiling GobiNet on Ubuntu](https://bytefreaks.net/gnulinux/compiling-gobinet-on-ubuntu-16-04-64bit)
+- Vedran Krivokuca's [patch](https://github.com/casastorta/gobiserial-patch/blob/master/GobiSerial.patch) to support later kernel versions for GobiSerial
+
+
