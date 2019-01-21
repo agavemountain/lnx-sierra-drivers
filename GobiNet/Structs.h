@@ -8,7 +8,7 @@ DESCRIPTION:
 FUNCTIONS:
    none
 
-Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:

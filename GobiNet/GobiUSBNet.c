@@ -20,7 +20,7 @@ FUNCTIONS:
    GobiUSBNetModInit
    GobiUSBNetModExit
 
-Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -89,7 +89,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "1.0.20"
+#define DRIVER_VERSION "1.0.30"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 
