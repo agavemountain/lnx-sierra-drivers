@@ -121,6 +121,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //-----------------------------------------------------------------------------
 
 extern int debug;
+extern int interruptible;
 
 // Prototype to GobiSuspend function
 int GobiSuspend( 
@@ -401,6 +402,10 @@ void ReadCallback( struct urb * pReadURB )
    if (pReadURB->status != 0)
    {
       DBG( "Read status = %d\n", pReadURB->status );
+
+      // Resubmit the interrupt URB
+      ResubmitIntURB( pDev->mQMIDev.mpIntURB );
+
       return;
    }
    DBG( "Read %d bytes\n", pReadURB->actual_length );
@@ -416,6 +421,10 @@ void ReadCallback( struct urb * pReadURB )
    if (result < 0)
    {
       DBG( "Read error parsing QMUX %d\n", result );
+
+      // Resubmit the interrupt URB
+      ResubmitIntURB( pDev->mQMIDev.mpIntURB );
+
       return;
    }
    
@@ -425,6 +434,10 @@ void ReadCallback( struct urb * pReadURB )
    if (dataSize < result + 3)
    {
       DBG( "Data buffer too small to parse\n" );
+
+      // Resubmit the interrupt URB
+      ResubmitIntURB( pDev->mQMIDev.mpIntURB );
+
       return;
    }
    
@@ -465,6 +478,10 @@ void ReadCallback( struct urb * pReadURB )
             
             // End critical section
             spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
+
+            // Resubmit the interrupt URB
+            ResubmitIntURB( pDev->mQMIDev.mpIntURB );
+
             return;
          }
 
@@ -1131,7 +1148,17 @@ int WriteSync(
    spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );   
 
    // Wait for write to finish
-   result = down_interruptible( &writeSem );
+   if (interruptible != 0)
+   {
+      // Allow user interrupts
+      result = down_interruptible( &writeSem );
+   }
+   else
+   {
+      // Ignore user interrupts
+      result = 0;
+      down( &writeSem );
+   }
 
    // Write is done, release device
    usb_autopm_put_interface( pDev->mpIntf );

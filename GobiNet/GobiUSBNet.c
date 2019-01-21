@@ -89,12 +89,15 @@ POSSIBILITY OF SUCH DAMAGE.
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "1.0.30"
+#define DRIVER_VERSION "1.0.40"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 
 // Debug flag
 int debug;
+
+// Allow user interrupts
+int interruptible = 1;
 
 // Class should be created during module init, so needs to be global
 static struct class * gpClass;
@@ -1143,3 +1146,5 @@ MODULE_LICENSE( "Dual BSD/GPL" );
 module_param( debug, bool, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( debug, "Debuging enabled or not" );
 
+module_param( interruptible, bool, S_IRUGO | S_IWUSR );
+MODULE_PARM_DESC( interruptible, "Listen for and return on user interrupt" );
