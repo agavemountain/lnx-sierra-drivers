@@ -3,7 +3,7 @@ FILE:
    Structs.h
 
 DESCRIPTION:
-   Declaration of structures used by the QMI Linux USB Network driver
+   Declaration of structures used by the Qualcomm Linux USB Network driver
    
 FUNCTIONS:
    none
@@ -304,7 +304,7 @@ typedef struct sQMIDev
 /*=========================================================================*/
 // Struct sGobiUSBNet
 //
-//    Structure that defines the data associated with the Gobi USB device
+//    Structure that defines the data associated with the Qualcomm USB device
 /*=========================================================================*/
 typedef struct sGobiUSBNet
 {

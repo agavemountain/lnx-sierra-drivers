@@ -227,6 +227,7 @@ void PrintHex(
       if (status != 3)
       {
          DBG( "snprintf error %d\n", status );
+         kfree( pPrintBuf );
          return;
       }
    }
@@ -590,6 +591,9 @@ METHOD:
 
 DESCRIPTION:
    Start continuous read "thread" (callback driven)
+
+   Note: In case of error, KillRead() should be run
+         to remove urbs and clean up memory.
    
 PARAMETERS:
    pDev     [ I ] - Device specific memory
@@ -1012,7 +1016,7 @@ RETURN VALUE:
          negative errno for failure
 ===========================================================================*/
 int WriteSync(
-   sGobiUSBNet *        pDev,
+   sGobiUSBNet *          pDev,
    char *                 pWriteBuffer,
    int                    writeBufferSize,
    u16                    clientID )
@@ -1085,6 +1089,8 @@ int WriteSync(
          GobiSuspend( pDev->mpIntf, PMSG_SUSPEND );
       }
 
+      usb_free_urb( pWriteURB );
+
       return result;
    }
 
@@ -1127,15 +1133,17 @@ int WriteSync(
    // Wait for write to finish
    result = down_interruptible( &writeSem );
 
+   // Write is done, release device
+   usb_autopm_put_interface( pDev->mpIntf );
+
    // Verify device is still valid
    if (IsDeviceValid( pDev ) == false)
    {
       DBG( "Invalid device!\n" );
+
+      usb_free_urb( pWriteURB );
       return -ENXIO;
    }
-
-   // Write is done, release device
-   usb_autopm_put_interface( pDev->mpIntf );
 
    // Restart critical section
    spin_lock_irqsave( &pDev->mQMIDev.mClientMemLock, flags );
@@ -1147,7 +1155,8 @@ int WriteSync(
       DBG( "Didn't get write URB back\n" );
    
       // End critical section
-      spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );   
+      spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
+      usb_free_urb( pWriteURB );
       return -EINVAL;
    }
 
@@ -2380,7 +2389,7 @@ RETURN VALUE:
    ssize_t - Number of bytes read for success
              Negative errno for failure
 ===========================================================================*/
-ssize_t UserspaceWrite (
+ssize_t UserspaceWrite(
    struct file *        pFilp, 
    const char __user *  pBuf, 
    size_t               size,
@@ -2543,9 +2552,9 @@ int RegisterQMIDevice( sGobiUSBNet * pDev )
       DBG( "Bad net name: %s\n", pDev->mpNetDev->net->name );
       return -ENXIO;
    }
-   pDevName += strlen("usb");
+   pDevName += strlen( "usb" );
    GobiQMIIndex = simple_strtoul( pDevName, NULL, 10 );
-   if(GobiQMIIndex < 0 )
+   if (GobiQMIIndex < 0)
    {
       DBG( "Bad minor number\n" );
       return -ENXIO;
@@ -2603,6 +2612,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    struct file * pFilp;
    unsigned long flags;
    int count = 0;
+   int tries;
 
    // Should never happen, but check anyway
    if (IsDeviceValid( pDev ) == false)
@@ -2660,7 +2670,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
             for (count = 0; count < pFDT->max_fds; count++)
             {
                pFilp = pFDT->fd[count];
-               if (pFilp != NULL &&  pFilp->f_dentry != NULL )
+               if (pFilp != NULL &&  pFilp->f_dentry != NULL)
                {
                   if (pFilp->f_dentry->d_inode == pOpenInode)
                   {
@@ -2681,11 +2691,29 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    }
 
    // Remove device (so no more calls can be made by users)
-   if (IS_ERR(pDev->mQMIDev.mpDevClass) == false)
+   if (IS_ERR( pDev->mQMIDev.mpDevClass ) == false)
    {
       device_destroy( pDev->mQMIDev.mpDevClass, 
                       pDev->mQMIDev.mDevNum );   
    }
+
+   // Hold onto cdev memory location until everyone is through using it.
+   // Timeout after 30 seconds (10 ms interval).  Timeout should never happen,
+   // but exists to prevent an infinate loop just in case.
+   for (tries = 0; tries < 30 * 100; tries++)
+   {
+      int ref = atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
+      if (ref > 1)
+      {
+         DBG( "cdev in use by %d tasks\n", ref - 1 ); 
+         msleep( 10 );
+      }
+      else
+      {
+         break;
+      }
+   }
+
    cdev_del( &pDev->mQMIDev.mCdev );
    
    unregister_chrdev_region( pDev->mQMIDev.mDevNum, 1 );
