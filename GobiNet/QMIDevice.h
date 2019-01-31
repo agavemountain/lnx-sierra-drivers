@@ -133,6 +133,12 @@ POSSIBILITY OF SUCH DAMAGE.
 
 extern int qcqmi_table[MAX_QCQMI];
 
+//Register State
+enum {
+   eClearCID=0,
+   eClearAndReleaseCID=1
+};
+
 /*=========================================================================*/
 // Generic functions
 /*=========================================================================*/
@@ -143,6 +149,8 @@ bool IsDeviceValid( sGobiUSBNet * pDev );
 #ifdef CONFIG_PM
 bool bIsSuspend(sGobiUSBNet *pGobiDev);
 #endif
+
+void UsbAutopmGetInterface(struct usb_interface * intf);
 
 // Print Hex data, for debug purposes
 void PrintHex(
@@ -245,8 +253,7 @@ int GetClientID(
 // Release client and free memory
 bool ReleaseClientID(
    sGobiUSBNet *      pDev,
-   u16                clientID,
-   struct semaphore   *pReadSem);
+   u16                clientID);
 
 // Find this client's memory
 sClientMemList * FindClientMem(
@@ -281,7 +288,8 @@ bool AddToNotifyList(
 int RemoveAndPopNotifyList(
    sGobiUSBNet *      pDev,
    u16              clientID,
-   u16              transactionID );
+   u16              transactionID ,
+   int              iClearCID);
 
 // Remove first Notify entry from this client's notify list 
 //    and Run function
@@ -365,7 +373,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev );
 /*=========================================================================*/
 
 // Check if QMI is ready for use
-bool QMIReady(
+int QMIReady(
    sGobiUSBNet *    pDev,
    u16                timeout );
 
@@ -415,13 +423,18 @@ int UserSpaceLock(struct file *filp, int cmd, struct file_lock *fl);
 // sync memory
 void gobi_flush_work(void);
 
+// Close Opened File Inode
+void CloseFileInode(sGobiUSBNet * pDev);
+
 // Set modem in specific power save mode
 int SetPowerSaveMode(sGobiUSBNet *pDev,u8 mode);
 
-// Release Specific Client ID Nofitication From Memory List
-int ReleaseNotifyList(sGobiUSBNet *pDev,u16 clientID,u8 transactionID);
 // config modem qmi wakeup filter
 int ConfigPowerSaveSettings(sGobiUSBNet *pDev, u8 service, u8 indication);
 
 // Get TID
 u8 QMIXactionIDGet( sGobiUSBNet *pDev);
+
+// Release Specific Client ID Nofitication From Memory List
+int ReleaseNotifyList(sGobiUSBNet *pDev,u16 clientID,u8 transactionID);
+
