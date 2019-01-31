@@ -1,5 +1,4 @@
-Gobi3000 network driver 1.0.60
-06/29/2011
+Gobi3000 network driver 2011-07-29-1026
 
 This readme covers important information concerning 
 the Gobi Net driver.
@@ -15,7 +14,13 @@ Table of Contents
 
 1. WHAT'S NEW
 
-This Release (Gobi3000 network driver 1.0.60) 06/29/2011
+This Release (Gobi3000 network driver 2011-07-29-1026)
+a. Signal the device to leave low power mode on enumeration
+b. Add "txQueueLength" parameter, which will set the Tx Queue Length
+c. Send SetControlLineState message during driver/device removal
+d. Change to new date-based versioning scheme
+
+Prior Release (Gobi3000 network driver 1.0.60) 06/29/2011
 a. Add UserspacePoll() function, to support select()
 b. Fix possible deadlock on GobiUSBNetTXTimeout()
 c. Fix memory leak on data transmission
@@ -60,7 +65,13 @@ b. Ksoftirq using 100% CPU:
    result in infinite software interrupts. The fix for this is to test 
    (in the usbnet_bh() function) if the usb_device can submit URBs before 
    attempting to submit the response URB buffers.
-   
+c. NetworkManager does not recognize connection after resume:
+   After resuming from sleep/hibernate, NetworkManager may not recognize new
+   network connections by the Gobi device. This is a system issue not specific
+   to the Gobi device, which may result in dhcp not being run and the default
+   route not being updated.  One way to fix this is to simply restart the 
+   NetworkManager service.
+
 -------------------------------------------------------------------------------
 
 

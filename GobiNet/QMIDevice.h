@@ -38,6 +38,9 @@ FUNCTIONS:
       AddToURBList
       PopFromURBList
 
+   Internal userspace wrapper functions
+      UserspaceunlockedIOCTL
+
    Userspace wrappers
       UserspaceOpen
       UserspaceIOCTL
@@ -55,6 +58,7 @@ FUNCTIONS:
       QMIWDSCallback
       SetupQMIWDSCallback
       QMIDMSGetMEID
+      QMIDMSSWISetFCCAuth
 
 Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
@@ -271,6 +275,16 @@ struct urb * PopFromURBList(
    u16                  clientID );
 
 /*=========================================================================*/
+// Internal userspace wrappers
+/*=========================================================================*/
+
+// Userspace unlocked ioctl
+long UserspaceunlockedIOCTL(
+   struct file *     pFilp,
+   unsigned int      cmd,
+   unsigned long     arg );
+
+/*=========================================================================*/
 // Userspace wrappers
 /*=========================================================================*/
 
@@ -280,10 +294,10 @@ int UserspaceOpen(
    struct file *    pFilp );
 
 // Userspace ioctl
-int UserspaceIOCTL( 
-   struct inode *    pUnusedInode, 
+int UserspaceIOCTL(
+   struct inode *    pUnusedInode,
    struct file *     pFilp,
-   unsigned int      cmd, 
+   unsigned int      cmd,
    unsigned long     arg );
 
 // Userspace close
@@ -314,7 +328,7 @@ unsigned int UserspacePoll(
 /*=========================================================================*/
 
 // QMI Device initialization function
-int RegisterQMIDevice( sGobiUSBNet * pDev );
+int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 );
 
 // QMI Device cleanup function
 void DeregisterQMIDevice( sGobiUSBNet * pDev );
@@ -337,8 +351,17 @@ void QMIWDSCallback(
 // Fire off reqests and start async read for QMI WDS callback
 int SetupQMIWDSCallback( sGobiUSBNet * pDev );
 
+int SetupQMIQOSCallback( sGobiUSBNet * pDev );
+
 // Register client, send req and parse MEID response, release client
 int QMIDMSGetMEID( sGobiUSBNet * pDev );
 
+// Register client, send req and parse FCC Authentication response, release client
+int QMIDMSSWISetFCCAuth( sGobiUSBNet * pDev );
 
+// Register client, send req and parse Data format response, release client
+int QMIWDASetDataFormat( sGobiUSBNet * pDev );
+
+// send req and parse Data format response
+int QMICTLSetDataFormat( sGobiUSBNet * pDev );
 

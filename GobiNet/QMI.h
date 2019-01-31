@@ -23,6 +23,7 @@ FUNCTIONS:
       QMIWDSSetEventReportReqSize
       QMIWDSGetPKGSRVCStatusReqSize
       QMIDMSGetMEIDReqSize
+      QMICTLSyncReqSize
 
    Fill Buffers with QMI requests
       QMICTLGetClientIDReq
@@ -31,12 +32,15 @@ FUNCTIONS:
       QMIWDSSetEventReportReq
       QMIWDSGetPKGSRVCStatusReq
       QMIDMSGetMEIDReq
-      
+      QMICTLSetDataFormatReq
+      QMICTLSyncReq
+
    Parse data from QMI responses
       QMICTLGetClientIDResp
       QMICTLReleaseClientIDResp
       QMIWDSEventResp
       QMIDMSGetMEIDResp
+      QMICTLSetDataFormatResp
 
 Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
@@ -100,10 +104,43 @@ POSSIBILITY OF SUCH DAMAGE.
 // Definitions
 /*=========================================================================*/
 
+extern int debug;
+extern int qos_debug;
+// DBG macro
+#define DBG( format, arg... ) \
+   if (debug == 1)\
+   { \
+      printk( KERN_INFO "GobiNet::%s " format, __FUNCTION__, ## arg ); \
+   }
+#define QDBG( format, arg... ) \
+   if (qos_debug == 1)\
+   { \
+      printk( KERN_INFO "GobiNet[QoS]::%s " format, __FUNCTION__, ## arg ); \
+   }
+
+/* EXPERIMENTAL feature
+ * The following definition is disabled (commented out) by default.
+ * When uncommented it enables configuring tx packet to QOS flow
+ * TODO packet filtering base on TFT indication
+ */
+/*#define QOS_MODE*/
+
+/* The following definition is disabled (commented out) by default.
+ * When uncommented it enables raw IP data format mode of operation */
+/*#define DATA_MODE_RP*/
+
+#ifdef QOS_MODE
+#ifdef DATA_MODE_RP
+#error "defining both QOS_MODE & DATA_MODE_RP is not supported"
+#endif
+#endif
+
 // QMI Service Types
 #define QMICTL 0
 #define QMIWDS 1
 #define QMIDMS 2
+#define QMIQOS 4
+#define QMIWDA 0x1A
 
 #define u8        unsigned char
 #define u16       unsigned short
@@ -119,6 +156,11 @@ POSSIBILITY OF SUCH DAMAGE.
 #define EINVAL    22
 #define ENOMSG    42
 #define ENODATA   61
+
+#define TLV_TYPE_LINK_PROTO 0x10
+
+#define QOS_STATUS (0x26)
+#define QOS_NET_SUPPORT (0x27)
 
 /*=========================================================================*/
 // Struct sQMUX
@@ -144,6 +186,13 @@ typedef struct sQMUX
 
 }__attribute__((__packed__)) sQMUX;
 
+typedef struct
+{
+   u32  id;
+   u8   status;
+   u8   event;
+}__attribute__((__packed__)) sQosFlow;
+
 /*=========================================================================*/
 // Generic QMUX functions
 /*=========================================================================*/
@@ -164,7 +213,7 @@ int FillQMUX(
 // Generic QMI functions
 /*=========================================================================*/
 
-// Get data bufffer of a specified TLV from a QMI message
+// Get data buffer of a specified TLV from a QMI message
 u16 GetTLV(
    void *   pQMIMessage,
    u16      messageLen,
@@ -206,6 +255,18 @@ u16 QMIWDSGetPKGSRVCStatusReqSize( void );
 
 // Get size of buffer needed for QMUX + QMIDMSGetMEIDReq
 u16 QMIDMSGetMEIDReqSize( void );
+
+// Get size of buffer needed for QMUX + QMIDMSSWISetFCCAuthReq
+u16 QMIDMSSWISetFCCAuthReqSize( void );
+
+// Get size of buffer needed for QMUX + QMIWDASetDataFormatReq
+u16 QMIWDASetDataFormatReqSize( void );
+
+// Get size of buffer needed for QMUX + QMICTLSetDataFormatReq
+u16  QMICTLSetDataFormatReqSize( void );
+
+// Get size of buffer needed for QMUX + QMICTLSyncReq
+u16 QMICTLSyncReqSize( void );
 
 /*=========================================================================*/
 // Fill Buffers with QMI requests
@@ -249,6 +310,29 @@ int QMIDMSGetMEIDReq(
    u16      buffSize,
    u16      transactionID );
 
+// Fill buffer with QMI DMS Set FCC Authentication Request
+int QMIDMSSWISetFCCAuthReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u16      transactionID );
+
+// Fill buffer with QMI WDA Set Data Format Request
+int QMIWDASetDataFormatReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u16      transactionID );
+
+// Fill buffer with QMI CTL Set Data Format Request
+int QMICTLSetDataFormatReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u8       transactionID );
+
+int QMICTLSyncReq(
+   void *pBuffer,
+   u16  buffSize,
+   u16  transactionID );
+
 /*=========================================================================*/
 // Parse data from QMI responses
 /*=========================================================================*/
@@ -280,10 +364,30 @@ int QMIWDSEventResp(
    bool *   pbLinkState,
    bool *   pbReconfigure );
 
+int QMIQOSEventResp(
+   sGobiUSBNet *    pDev,
+   void *   pBuffer,
+   u16      buffSize);
+
 // Parse the QMI DMS Get Serial Numbers Resp
 int QMIDMSGetMEIDResp(
    void *   pBuffer,
    u16      buffSize,
    char *   pMEID,
    int      meidSize );
+
+// Parse the QMI DMS Get Serial Numbers Resp
+int QMIWDASetDataFormatResp(
+   void *   pBuffer,
+   u16      buffSize );
+
+// Parse the QMI Set Data Format Resp
+int QMICTLSetDataFormatResp(
+   void *   pBuffer,
+   u16      buffSize);
+
+// Pasre the QMI CTL Sync Response
+int QMICTLSyncResp(
+   void *pBuffer,
+   u16  buffSize );
 

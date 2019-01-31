@@ -4,12 +4,12 @@ FILE:
 
 DESCRIPTION:
    Qualcomm QMI driver code
-   
+
 FUNCTIONS:
    Generic QMUX functions
       ParseQMUX
       FillQMUX
-   
+
    Generic QMI functions
       GetTLV
       ValidQMIMessage
@@ -22,12 +22,19 @@ FUNCTIONS:
       QMIWDSSetEventReportReq
       QMIWDSGetPKGSRVCStatusReq
       QMIDMSGetMEIDReq
-      
+      QMIDMSSWISetFCCAuthReq
+      QMIWDASetDataFormatReq
+      QMICTLSetDataFormatReq
+      QMICTLSyncReq
+
    Parse data from QMI responses
       QMICTLGetClientIDResp
       QMICTLReleaseClientIDResp
       QMIWDSEventResp
       QMIDMSGetMEIDResp
+      QMIWDASetDataFormatResp
+      QMICTLSetDataFormatResp
+      QMICTLSyncResp
 
 Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
@@ -88,6 +95,9 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 // Include Files
 //---------------------------------------------------------------------------
+#include <asm/unaligned.h>
+#include <linux/kernel.h>
+#include "Structs.h"
 #include "QMI.h"
 
 /*=========================================================================*/
@@ -100,7 +110,7 @@ METHOD:
 
 DESCRIPTION:
    Get size of buffer needed for QMUX
- 
+
 RETURN VALUE:
    u16 - size of buffer
 ===========================================================================*/
@@ -115,7 +125,7 @@ METHOD:
 
 DESCRIPTION:
    Get size of buffer needed for QMUX + QMICTLGetClientIDReq
- 
+
 RETURN VALUE:
    u16 - size of buffer
 ===========================================================================*/
@@ -130,7 +140,7 @@ METHOD:
 
 DESCRIPTION:
    Get size of buffer needed for QMUX + QMICTLReleaseClientIDReq
- 
+
 RETURN VALUE:
    u16 - size of header
 ===========================================================================*/
@@ -145,7 +155,7 @@ METHOD:
 
 DESCRIPTION:
    Get size of buffer needed for QMUX + QMICTLReadyReq
- 
+
 RETURN VALUE:
    u16 - size of buffer
 ===========================================================================*/
@@ -160,7 +170,7 @@ METHOD:
 
 DESCRIPTION:
    Get size of buffer needed for QMUX + QMIWDSSetEventReportReq
- 
+
 RETURN VALUE:
    u16 - size of buffer
 ===========================================================================*/
@@ -175,7 +185,7 @@ METHOD:
 
 DESCRIPTION:
    Get size of buffer needed for QMUX + QMIWDSGetPKGSRVCStatusReq
- 
+
 RETURN VALUE:
    u16 - size of buffer
 ===========================================================================*/
@@ -190,13 +200,73 @@ METHOD:
 
 DESCRIPTION:
    Get size of buffer needed for QMUX + QMIDMSGetMEIDReq
- 
+
 RETURN VALUE:
    u16 - size of buffer
 ===========================================================================*/
 u16 QMIDMSGetMEIDReqSize( void )
 {
    return sizeof( sQMUX ) + 7;
+}
+
+/*===========================================================================
+METHOD:
+   QMIDMSSWISetFCCAuthReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMIDMSSWISetFCCAuthReq
+
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16 QMIDMSSWISetFCCAuthReqSize( void )
+{
+   return sizeof( sQMUX ) + 7;
+}
+
+/*===========================================================================
+METHOD:
+   QMIWDASetDataFormatReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMIWDASetDataFormatReq
+
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16 QMIWDASetDataFormatReqSize( void )
+{
+   return sizeof( sQMUX ) + 25;
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLSetDataFormatReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMICTLSetDataFormatReq
+ 
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16  QMICTLSetDataFormatReqSize( void )
+{
+   return sizeof( sQMUX ) + 15; 
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLSyncReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMICTLSyncReq
+ 
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16  QMICTLSyncReqSize( void )
+{
+   return sizeof( sQMUX ) + 6; 
 }
 
 /*=========================================================================*/
@@ -225,7 +295,7 @@ int ParseQMUX(
    u16      buffSize )
 {
    sQMUX * pQMUXHeader;
-   
+
    if (pBuffer == 0 || buffSize < 12)
    {
       return -ENOMEM;
@@ -235,16 +305,15 @@ int ParseQMUX(
    pQMUXHeader = (sQMUX *)pBuffer;
 
    if (pQMUXHeader->mTF != 1
-   ||  pQMUXHeader->mLength != buffSize - 1
+   ||  le16_to_cpu(get_unaligned(&pQMUXHeader->mLength)) != buffSize - 1
    ||  pQMUXHeader->mCtrlFlag != 0x80 )
    {
       return -EINVAL;
    }
 
-   // Client ID   
-   *pClientID = (pQMUXHeader->mQMIClientID << 8) 
-              + pQMUXHeader->mQMIService;
-   
+   // Client ID
+   *pClientID = (pQMUXHeader->mQMIClientID << 8) + pQMUXHeader->mQMIService;
+
    return sizeof( sQMUX );
 }
 
@@ -280,10 +349,11 @@ int FillQMUX(
    pQMUXHeader = (sQMUX *)pBuffer;
 
    pQMUXHeader->mTF = 1;
-   pQMUXHeader->mLength = buffSize - 1;
+   put_unaligned(cpu_to_le16(buffSize - 1), &pQMUXHeader->mLength);
+   DBG("pQMUXHeader->mLength = 0x%x, buffSize - 1 = 0x%x\n",pQMUXHeader->mLength, buffSize - 1);
    pQMUXHeader->mCtrlFlag = 0;
 
-   // Service and Client ID   
+   // Service and Client ID
    pQMUXHeader->mQMIService = clientID & 0xff;
    pQMUXHeader->mQMIClientID = clientID >> 8;
 
@@ -299,10 +369,10 @@ METHOD:
    GetTLV (Public Method)
 
 DESCRIPTION:
-   Get data bufffer of a specified TLV from a QMI message
+   Get data buffer of a specified TLV from a QMI message
 
    QMI Message shall NOT include SDU
-   
+
 PARAMETERS
    pQMIMessage    [ I ] - QMI Message buffer
    messageLen     [ I ] - Size of QMI Message buffer
@@ -324,29 +394,24 @@ u16 GetTLV(
    u16 pos;
    u16 tlvSize = 0;
    u16 cpyCount;
-   
+
    if (pQMIMessage == 0 || pOutDataBuf == 0)
    {
       return -ENOMEM;
-   }   
-   
-   for (pos = 4; 
-        pos + 3 < messageLen; 
+   }
+
+   for (pos = 4;
+        pos + 3 < messageLen;
         pos += tlvSize + 3)
    {
-      tlvSize = *(u16 *)(pQMIMessage + pos + 1);
+      tlvSize = le16_to_cpu( get_unaligned(((u16 *)(pQMIMessage + pos + 1) )) );
       if (*(u8 *)(pQMIMessage + pos) == type)
       {
          if (bufferLen < tlvSize)
          {
             return -ENOMEM;
          }
-        
-         /* replacement memcpy
-            memcpy( pOutDataBuf,
-                    pQMIMessage + pos + 3,
-                    tlvSize ); */
-         
+
          for (cpyCount = 0; cpyCount < tlvSize; cpyCount++)
          {
             *((char*)(pOutDataBuf + cpyCount)) = *((char*)(pQMIMessage + pos + 3 + cpyCount));
@@ -355,7 +420,7 @@ u16 GetTLV(
          return tlvSize;
       }
    }
-   
+
    return -ENOMSG;
 }
 
@@ -388,7 +453,7 @@ int ValidQMIMessage(
       // Found TLV
       if (*(u16 *)&mandTLV[0] != 0)
       {
-         return *(u16 *)&mandTLV[2];
+         return le16_to_cpu( get_unaligned(&mandTLV[2]) );
       }
       else
       {
@@ -399,7 +464,7 @@ int ValidQMIMessage(
    {
       return -ENOMSG;
    }
-}      
+}
 
 /*===========================================================================
 METHOD:
@@ -407,7 +472,7 @@ METHOD:
 
 DESCRIPTION:
    Get the message ID of a QMI message
-   
+
    QMI Message shall NOT include SDU
 
 PARAMETERS
@@ -428,7 +493,7 @@ int GetQMIMessageID(
    }
    else
    {
-      return *(u16 *)pQMIMessage;
+      return le16_to_cpu( get_unaligned((u16 *)pQMIMessage) );
    }
 }
 
@@ -470,18 +535,18 @@ int QMICTLGetClientIDReq(
    // Transaction ID
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID;
    // Message ID
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 2) = 0x0022;
+   put_unaligned(cpu_to_le16(0x0022), (u16 *)(pBuffer + sizeof( sQMUX ) + 2));
    // Size of TLV's
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 4) = 0x0004;
-      // QMI Service Type
-      *(u8 *)(pBuffer + sizeof( sQMUX ) + 6)  = 0x01;
-      // Size
-      *(u16 *)(pBuffer + sizeof( sQMUX ) + 7) = 0x0001;
-      // QMI svc type
-      *(u8 *)(pBuffer + sizeof( sQMUX ) + 9)  = serviceType;
+   put_unaligned(cpu_to_le16(0x0004), (u16 *)(pBuffer + sizeof( sQMUX ) + 4));
+   // QMI Service Type
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 6)  = 0x01;
+   // Size
+   put_unaligned(cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 7));
+   // QMI svc type
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 9)  = serviceType;
 
-   // success
-   return sizeof( sQMUX ) + 10;
+  // success
+  return sizeof( sQMUX ) + 10;
 }
 
 /*===========================================================================
@@ -512,22 +577,25 @@ int QMICTLReleaseClientIDReq(
       return -ENOMEM;
    }
 
+   DBG(  "buffSize: 0x%x, transactionID: 0x%x, clientID: 0x%x,\n",
+         buffSize, transactionID, clientID );
+
    // QMI CTL RELEASE CLIENT ID REQ
    // Request
    *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
    // Transaction ID
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 1 ) = transactionID;
    // Message ID
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 2) = 0x0023;
+   put_unaligned( cpu_to_le16(0x0023), (u16 *)(pBuffer + sizeof( sQMUX ) + 2) );
    // Size of TLV's
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 4) = 0x0005;
-      // Release client ID
-      *(u8 *)(pBuffer + sizeof( sQMUX ) + 6)  = 0x01;
-      // Size
-      *(u16 *)(pBuffer + sizeof( sQMUX ) + 7) = 0x0002;
-      // QMI svs type / Client ID
-      *(u16 *)(pBuffer + sizeof( sQMUX ) + 9)  = clientID;
-      
+   put_unaligned( cpu_to_le16(0x0005), (u16 *)(pBuffer + sizeof( sQMUX ) + 4) );
+   // Release client ID
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 6)  = 0x01;
+   // Size
+   put_unaligned( cpu_to_le16(0x0002), (u16 *)(pBuffer + sizeof( sQMUX ) + 7));
+   // QMI svs type / Client ID
+   put_unaligned(cpu_to_le16(clientID), (u16 *)(pBuffer + sizeof( sQMUX ) + 9));
+
    // success
    return sizeof( sQMUX ) + 11;
 }
@@ -558,18 +626,20 @@ int QMICTLReadyReq(
       return -ENOMEM;
    }
 
+   DBG("buffSize: 0x%x, transactionID: 0x%x\n", buffSize, transactionID);
+
    // QMI CTL GET VERSION INFO REQ
    // Request
    *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
    // Transaction ID
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID;
    // Message ID
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 2) = 0x0021;
+   put_unaligned( cpu_to_le16(0x0021), (u16 *)(pBuffer + sizeof( sQMUX ) + 2) );
    // Size of TLV's
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 4) = 0x0000;
+   put_unaligned( cpu_to_le16(0x0000), (u16 *)(pBuffer + sizeof( sQMUX ) + 4) );
 
-   // success
-   return sizeof( sQMUX ) + 6;
+  // success
+  return sizeof( sQMUX ) + 6;
 }
 
 /*===========================================================================
@@ -602,22 +672,22 @@ int QMIWDSSetEventReportReq(
    // Request
    *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
    // Transaction ID
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID;
+   put_unaligned( cpu_to_le16(transactionID), (u16 *)(pBuffer + sizeof( sQMUX ) + 1));
    // Message ID
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 3) = 0x0001;
+   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 3));
    // Size of TLV's
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 5) = 0x0008;
-      // Report channel rate TLV
-      *(u8 *)(pBuffer + sizeof( sQMUX ) + 7)  = 0x11;
-      // Size
-      *(u16 *)(pBuffer + sizeof( sQMUX ) + 8) = 0x0005;
-      // Stats period
-      *(u8 *)(pBuffer + sizeof( sQMUX ) + 10)  = 0x01;
-      // Stats mask
-      *(u32 *)(pBuffer + sizeof( sQMUX ) + 11)  = 0x000000ff;
+   put_unaligned(cpu_to_le16(0x0008), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+   // Report channel rate TLV
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 7)  = 0x11;
+   // Size
+   put_unaligned( cpu_to_le16(0x0005), (u16 *)(pBuffer + sizeof( sQMUX ) + 8));
+   // Stats period
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 10)  = 0x01;
+   // Stats mask
+   put_unaligned( cpu_to_le32(0x000000ff), (u32 *)(pBuffer + sizeof( sQMUX ) + 11) );
 
-   // success
-   return sizeof( sQMUX ) + 15;
+  // success
+  return sizeof( sQMUX ) + 15;
 }
 
 /*===========================================================================
@@ -650,11 +720,11 @@ int QMIWDSGetPKGSRVCStatusReq(
    // Request
    *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
    // Transaction ID
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID;
+   put_unaligned(cpu_to_le16(transactionID), (u16 *)(pBuffer + sizeof( sQMUX ) + 1));
    // Message ID
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 3) = 0x0022;
+   put_unaligned(cpu_to_le16(0x0022), (u16 *)(pBuffer + sizeof( sQMUX ) + 3));
    // Size of TLV's
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 5) = 0x0000;
+   put_unaligned(cpu_to_le16(0x0000), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
 
    // success
    return sizeof( sQMUX ) + 7;
@@ -690,14 +760,252 @@ int QMIDMSGetMEIDReq(
    // Request
    *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
    // Transaction ID
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID;
+   put_unaligned( cpu_to_le16(transactionID), (u16 *)(pBuffer + sizeof( sQMUX ) + 1) );
    // Message ID
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 3) = 0x0025;
+   put_unaligned( cpu_to_le16(0x0025), (u16 *)(pBuffer + sizeof( sQMUX ) + 3) );
    // Size of TLV's
-   *(u16 *)(pBuffer + sizeof( sQMUX ) + 5) = 0x0000;
+   put_unaligned( cpu_to_le16(0x0000), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+
+   // success
+   return sizeof( sQMUX ) + 7;
+}
+
+
+/*===========================================================================
+METHOD:
+   QMIDMSSWISetFCCAuthReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI DMS Get FCC Authentication Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMIDMSSWISetFCCAuthReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u16      transactionID )
+{
+   if (pBuffer == 0 || buffSize < QMIDMSSWISetFCCAuthReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   // QMI DMS SET FCC AUTH REQ
+   // Request
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
+   // Transaction ID
+   put_unaligned( cpu_to_le16(transactionID), (u16 *)(pBuffer + sizeof( sQMUX ) + 1) );
+   // Message ID
+   put_unaligned( cpu_to_le16(0x555F), (u16 *)(pBuffer + sizeof( sQMUX ) + 3) );
+   // Size of TLV's
+   put_unaligned( cpu_to_le16(0x0000), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+
+   // success
+   return QMIDMSSWISetFCCAuthReqSize();
+}
+
+/*===========================================================================
+METHOD:
+   QMIWDASetDataFormatReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI WDA Set Data Format Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMIWDASetDataFormatReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u16      transactionID )
+{
+   if (pBuffer == 0 || buffSize < QMIWDASetDataFormatReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   // QMI WDA SET DATA FORMAT REQ
+   // Request
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
+
+   // Transaction ID
+   put_unaligned( cpu_to_le16(transactionID), (u16 *)(pBuffer + sizeof( sQMUX ) + 1) );
+
+   // Message ID
+   put_unaligned( cpu_to_le16(0x0020), (u16 *)(pBuffer + sizeof( sQMUX ) + 3) );
+
+   // Size of TLV's
+   put_unaligned( cpu_to_le16(0x0012), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+
+   /* TLVType QOS Data Format 1 byte  */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) +  7) = 0x10; // type data format
+
+   /* TLVLength  2 bytes - see spec */
+   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 8)); 
+
+   /* DataFormat: 0-default; 1-QoS hdr present 2 bytes */
+#ifdef QOS_MODE
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 10) = 1; /* QOS header */
+#else
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 10) = 0; /* no-QOS header */
+#endif
+
+   /* TLVType Link-Layer Protocol  (Optional) 1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 11) = 0x11;
+
+   /* TLVLength 2 bytes */
+   put_unaligned( cpu_to_le16(0x0004), (u16 *)(pBuffer + sizeof( sQMUX ) + 12));
+
+   /* LinkProt: 0x1 - ETH; 0x2 - rawIP  4 bytes */
+#ifdef DATA_MODE_RP
+   /* Set RawIP mode */
+   put_unaligned( cpu_to_le32(0x00000002), (u32 *)(pBuffer + sizeof( sQMUX ) + 14));
+   DBG("Request RawIP Data Format\n");
+#else
+   /* Set Ethernet  mode */
+   put_unaligned( cpu_to_le32(0x00000001), (u32 *)(pBuffer + sizeof( sQMUX ) + 14));
+   DBG("Request Ethernet Data Format\n");
+#endif
+
+   /* TLVType Uplink Data Aggression Protocol - 1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 18) = 0x13;
+
+   /* TLVLength 2 bytes */
+   put_unaligned( cpu_to_le16(0x0004), (u16 *)(pBuffer + sizeof( sQMUX ) + 19));
+
+   /* TLV Data */
+   put_unaligned( cpu_to_le32(0x00000000), (u32 *)(pBuffer + sizeof( sQMUX ) + 21));
+
+   // success
+   return QMIWDASetDataFormatReqSize();
+}
+
+
+
+/*===========================================================================
+METHOD:
+   QMICTLSetDataFormatReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI CTL Set Data Format Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMICTLSetDataFormatReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u8       transactionID )
+{
+   if (pBuffer == 0 || buffSize < QMICTLSetDataFormatReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   /* QMI CTL Set Data Format Request */
+   /* Request */
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00; // QMICTL_FLAG_REQUEST
+   
+   /* Transaction ID 1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID; /* 1 byte as in spec */
+
+   /* QMICTLType  2 bytes */
+   put_unaligned( cpu_to_le16(0x0026), (u16 *)(pBuffer + sizeof( sQMUX ) + 2));
+
+   /* Length  2 bytes  of 2 TLVs  each - see spec */
+   put_unaligned( cpu_to_le16(0x0009), (u16 *)(pBuffer + sizeof( sQMUX ) + 4));
+
+   /* TLVType Data Format (Mandatory)  1 byte  */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) +  6) = 0x01; // type data format
+
+   /* TLVLength  2 bytes - see spec */
+   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 7)); 
+
+   /* DataFormat: 0-default; 1-QoS hdr present 2 bytes */
+#ifdef QOS_MODE
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 9) = 1; /* QOS header */
+#else
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 9) = 0; /* no-QOS header */
+#endif
+
+    /* TLVType Link-Layer Protocol  (Optional) 1 byte */
+    *(u8 *)(pBuffer + sizeof( sQMUX ) + 10) = TLV_TYPE_LINK_PROTO;
+
+    /* TLVLength 2 bytes */
+    put_unaligned( cpu_to_le16(0x0002), (u16 *)(pBuffer + sizeof( sQMUX ) + 11));
+
+   /* LinkProt: 0x1 - ETH; 0x2 - rawIP  2 bytes */
+#ifdef DATA_MODE_RP
+   /* Set RawIP mode */
+   put_unaligned( cpu_to_le16(0x0002), (u16 *)(pBuffer + sizeof( sQMUX ) + 13));
+   DBG("Request RawIP Data Format\n");
+#else
+   /* Set Ethernet  mode */
+   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 13));
+   DBG("Request Ethernet Data Format\n");
+#endif
+
+   /* success */
+   return sizeof( sQMUX ) + 15;
+
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLSyncReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI CTL Sync Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMICTLSyncReq(
+   void *pBuffer,
+   u16  buffSize,
+   u16  transactionID )
+{
+   if (pBuffer == 0 || buffSize < QMICTLSyncReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   // Request
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
+   // Transaction ID
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID;
+   // Message ID
+   put_unaligned( cpu_to_le16(0x0027), (u16 *)(pBuffer + sizeof( sQMUX ) + 2) );
+   // Size of TLV's
+   put_unaligned( cpu_to_le16(0x0000), (u16 *)(pBuffer + sizeof( sQMUX ) + 4) );
 
   // success
-  return sizeof( sQMUX ) + 7;
+  return sizeof( sQMUX ) + 6;
 }
 
 /*=========================================================================*/
@@ -726,12 +1034,12 @@ int QMICTLGetClientIDResp(
    u16 *  pClientID )
 {
    int result;
-   
+
    // Ignore QMUX and SDU
    //    QMI CTL SDU is 2 bytes, not 3
    u8 offset = sizeof( sQMUX ) + 2;
 
-   if (pBuffer == 0 || buffSize < offset)
+   if (pBuffer == 0 || buffSize < offset )
    {
       return -ENOMEM;
    }
@@ -780,7 +1088,7 @@ int QMICTLReleaseClientIDResp(
    u16      buffSize )
 {
    int result;
-   
+
    // Ignore QMUX and SDU
    //    QMI CTL SDU is 2 bytes, not 3
    u8 offset = sizeof( sQMUX ) + 2;
@@ -856,7 +1164,7 @@ int QMIWDSEventResp(
    // Ignore QMUX and SDU
    u8 offset = sizeof( sQMUX ) + 3;
 
-   if (pBuffer == 0 
+   if (pBuffer == 0
    || buffSize < offset
    || pTXOk == 0
    || pRXOk == 0
@@ -883,13 +1191,21 @@ int QMIWDSEventResp(
    {
       // TLV's are not mandatory
       GetTLV( pBuffer, buffSize, 0x10, (void*)pTXOk, 4 );
+      put_unaligned( le32_to_cpu(*pTXOk), pTXOk);
       GetTLV( pBuffer, buffSize, 0x11, (void*)pRXOk, 4 );
+      put_unaligned( le32_to_cpu(*pRXOk), pRXOk);
       GetTLV( pBuffer, buffSize, 0x12, (void*)pTXErr, 4 );
+      put_unaligned( le32_to_cpu(*pTXErr), pTXErr);
       GetTLV( pBuffer, buffSize, 0x13, (void*)pRXErr, 4 );
+      put_unaligned( le32_to_cpu(*pRXErr), pRXErr);
       GetTLV( pBuffer, buffSize, 0x14, (void*)pTXOfl, 4 );
+      put_unaligned( le32_to_cpu(*pTXOfl), pTXOfl);
       GetTLV( pBuffer, buffSize, 0x15, (void*)pRXOfl, 4 );
+      put_unaligned( le32_to_cpu(*pRXOfl), pRXOfl);
       GetTLV( pBuffer, buffSize, 0x19, (void*)pTXBytesOk, 8 );
+      put_unaligned( le64_to_cpu(*pTXBytesOk), pTXBytesOk);
       GetTLV( pBuffer, buffSize, 0x1A, (void*)pRXBytesOk, 8 );
+      put_unaligned( le64_to_cpu(*pRXBytesOk), pRXBytesOk);
    }
    // QMI WDS Get PKG SRVC Status Resp
    else if (result == 0x22)
@@ -918,7 +1234,7 @@ int QMIWDSEventResp(
             *pbReconfigure = false;
          }
       }
-      
+
       if (result < 0)
       {
          return result;
@@ -926,6 +1242,71 @@ int QMIWDSEventResp(
    }
    else
    {
+      return -EFAULT;
+   }
+
+   return 0;
+}
+
+int QMIQOSEventResp(
+   sGobiUSBNet *    pDev,
+   void *   pBuffer,
+   u16      buffSize)
+{
+   int result;
+
+   // Ignore QMUX and SDU
+   u8 offset = sizeof( sQMUX ) + 3;
+
+   if (pBuffer == 0
+   || buffSize < offset)
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+
+   result = GetQMIMessageID( pBuffer, buffSize );
+   if (result == QOS_NET_SUPPORT)
+   {
+      u16 tlv_rtn;
+      u8 supported = (u8)-1;
+      tlv_rtn = GetTLV( pBuffer, buffSize, 0x01, (void*)&supported, 1 );
+      QDBG(" %d\n", tlv_rtn);
+
+      if (supported != (u8)-1)
+      {
+          QDBG("supported %d", supported);
+      }
+   }
+   else if (result == QOS_STATUS)
+   {
+      int j;
+      sQosFlow flow;
+      u16 tlv_rtn;
+
+      tlv_rtn = GetTLV( pBuffer, buffSize, 0x01, (void*)&flow, 6 );
+      put_unaligned( le32_to_cpu(flow.id), &flow.id);
+      QDBG("tlv_rtn %d\n", tlv_rtn);
+      QDBG("flow.id 0x%x\n", flow.id);
+      QDBG("flow.status 0x%x\n", flow.status);
+      QDBG("flow.event 0x%x\n", flow.event);
+
+      for(j=0;j<MAX_MAP;j++)
+      {
+          //TODO this only update flow status when mapped
+          //share we always update even when user has not assign a map for this qos id
+          if (pDev->maps.table[j].qosId== flow.id)
+          {
+              pDev->maps.table[j].state = flow.status;
+          }
+      }
+
+   }
+   else
+   {
+      QDBG("unhandled indication 0x%x\n", result);
       return -EFAULT;
    }
 
@@ -989,3 +1370,204 @@ int QMIDMSGetMEIDResp(
    return 0;
 }
 
+/*===========================================================================
+METHOD:
+   QMIWDASetDataFormatResp (Public Method)
+
+DESCRIPTION:
+   Parse the QMI WDA Set Data Format Response
+
+PARAMETERS
+   pBuffer         [ I ] - Buffer to be parsed
+   buffSize        [ I ] - Size of pBuffer
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int QMIWDASetDataFormatResp(
+   void *   pBuffer,
+   u16      buffSize )
+{
+
+   int result;
+
+   u8 pktLinkProtocol[4];
+
+   // Ignore QMUX and SDU
+   // QMI SDU is 3 bytes
+   u8 offset = sizeof( sQMUX ) + 3;
+
+   if (pBuffer == 0 || buffSize < offset)
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+
+   result = GetQMIMessageID( pBuffer, buffSize );
+   if (result != 0x20)
+   {
+      return -EFAULT;
+   }
+
+   /* Check response message result TLV */
+   result = ValidQMIMessage( pBuffer, buffSize );
+   if (result != 0)
+   {
+      DBG("EFAULT: Data Format Mode Bad Response\n"); 
+//      return -EFAULT;
+      return 0;
+   }
+
+   /* Check response message link protocol */
+   result = GetTLV( pBuffer, buffSize, 0x11,
+                     &pktLinkProtocol[0], 4);
+   if (result != 4)
+   {
+      DBG("EFAULT: Wrong TLV format\n"); 
+      return 0;
+      
+   }
+
+#ifdef DATA_MODE_RP
+   if (pktLinkProtocol[0] != 2)
+   {
+      DBG("EFAULT: Data Format Cannot be set to RawIP Mode\n"); 
+      return 0;
+   }
+   DBG("Data Format Set to RawIP\n");
+#else
+   if (pktLinkProtocol[0] != 1)
+   {
+      DBG("EFAULT: Data Format Cannot be set to Ethernet Mode\n"); 
+      return 0;
+   }
+   DBG("Data Format Set to Ethernet Mode \n");
+#endif
+
+   return 0;
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLSetDataFormatResp (Public Method)
+
+DESCRIPTION:
+   Parse the QMI CTL Set Data Format Response
+
+PARAMETERS
+   pBuffer         [ I ] - Buffer to be parsed
+   buffSize        [ I ] - Size of pBuffer
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int QMICTLSetDataFormatResp(
+   void *   pBuffer,
+   u16      buffSize )
+{
+
+   int result;
+
+   u8 pktLinkProtocol[2];
+
+   // Ignore QMUX and SDU
+   //    QMI CTL SDU is 2 bytes, not 3
+   u8 offset = sizeof( sQMUX ) + 2;
+
+   if (pBuffer == 0 || buffSize < offset)
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+
+   result = GetQMIMessageID( pBuffer, buffSize );
+   if (result != 0x26)
+   {
+      return -EFAULT;
+   }
+
+   /* Check response message result TLV */
+   result = ValidQMIMessage( pBuffer, buffSize );
+   if (result != 0)
+   {
+      DBG("EFAULT: Data Format Mode Bad Response\n"); 
+      return -EFAULT;
+   }
+
+   /* Check response message link protocol */
+   result = GetTLV( pBuffer, buffSize, TLV_TYPE_LINK_PROTO,
+                     &pktLinkProtocol[0], 2);
+   if (result != 2)
+   {
+      DBG("EFAULT: Wrong TLV format\n"); 
+      return -EFAULT;
+   }
+
+#ifdef DATA_MODE_RP
+   if (pktLinkProtocol[0] != 2)
+   {
+      DBG("EFAULT: Data Format Cannot be set to RawIP Mode\n"); 
+      return -EFAULT;
+   }
+   DBG("Data Format Set to RawIP\n");
+#else
+   if (pktLinkProtocol[0] != 1)
+   {
+      DBG("EFAULT: Data Format Cannot be set to Ethernet Mode\n"); 
+      return -EFAULT;
+   }
+   DBG("Data Format Set to Ethernet Mode \n");
+#endif
+
+   return 0;
+}
+
+
+/*===========================================================================
+METHOD:
+   QMICTLSyncResp (Public Method)
+
+DESCRIPTION:
+   Validate the QMI CTL Sync Response
+
+PARAMETERS
+   pBuffer         [ I ] - Buffer to be parsed
+   buffSize        [ I ] - Size of pBuffer
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int QMICTLSyncResp(
+   void *pBuffer,
+   u16  buffSize )
+{
+   int result;
+
+   // Ignore QMUX (2 bytes for QMI CTL) and SDU
+   u8 offset = sizeof( sQMUX ) + 2;
+
+   if (pBuffer == 0 || buffSize < offset)
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+
+   result = GetQMIMessageID( pBuffer, buffSize );
+   if (result != 0x27)
+   {
+      return -EFAULT;
+   }
+
+   result = ValidQMIMessage( pBuffer, buffSize );
+
+   return result;
+}

@@ -4,7 +4,7 @@ FILE:
 
 DESCRIPTION:
    Declaration of structures used by the Qualcomm Linux USB Network driver
-   
+
 FUNCTIONS:
    none
 
@@ -93,13 +93,9 @@ POSSIBILITY OF SUCH DAMAGE.
    #include <linux/file.h>
 #endif
 
-// DBG macro
-#define DBG( format, arg... ) \
-   if (debug == 1)\
-   { \
-      printk( KERN_INFO "GobiNet::%s " format, __FUNCTION__, ## arg ); \
-   } \
-
+#define MAX_MAP (9)
+#define MAX_DSCP_ID        0x3F
+#define UNIQUE_DSCP_ID     0x40
 
 // Used in recursion, defined later below
 struct sGobiUSBNet;
@@ -113,7 +109,7 @@ typedef struct sReadMemList
 {
    /* Data buffer */
    void *                     mpData;
-   
+
    /* Transaction ID */
    u16                        mTransactionID;
 
@@ -134,13 +130,13 @@ typedef struct sNotifyList
 {
    /* Function to be run when data becomes available */
    void                  (* mpNotifyFunct)(struct sGobiUSBNet *, u16, void *);
-   
+
    /* Transaction ID */
    u16                   mTransactionID;
 
    /* Data to provide as parameter to mpNotifyFunct */
    void *                mpData;
-   
+
    /* Next entry in linked list */
    struct sNotifyList *  mpNext;
 
@@ -175,17 +171,17 @@ typedef struct sClientMemList
    /* Linked list of Read entries */
    /*    Stores data read from device before sending to client */
    sReadMemList *               mpList;
-   
+
    /* Linked list of Notification entries */
-   /*    Stores notification functions to be run as data becomes 
+   /*    Stores notification functions to be run as data becomes
          available or the device is removed */
    sNotifyList *                mpReadNotifyList;
 
    /* Linked list of URB entries */
-   /*    Stores pointers to outstanding URBs which need canceled 
+   /*    Stores pointers to outstanding URBs which need canceled
          when the client is deregistered or the device is removed */
    sURBList *                   mpURBList;
-   
+
    /* Next entry in linked list */
    struct sClientMemList *      mpNext;
 
@@ -227,7 +223,7 @@ typedef struct sURBSetupPacket
 // Struct sAutoPM
 //
 //    Structure used to manage AutoPM thread which determines whether the
-//    device is in use or may enter autosuspend.  Also submits net 
+//    device is in use or may enter autosuspend.  Also submits net
 //    transmissions asynchronously.
 /*=========================================================================*/
 typedef struct sAutoPM
@@ -246,13 +242,16 @@ typedef struct sAutoPM
 
    /* URB list lock (for adding and removing elements) */
    spinlock_t                 mURBListLock;
+
+   /* Length of the URB list */
+   atomic_t                   mURBListLen;
    
    /* Active URB */
    struct urb *               mpActiveURB;
 
    /* Active URB lock (for adding and removing elements) */
    spinlock_t                 mActiveURBLock;
-   
+
    /* Duplicate pointer to USB device interface */
    struct usb_interface *     mpIntf;
 
@@ -286,17 +285,17 @@ typedef struct sQMIDev
 
    /* Read buffer attached to current read URB */
    void *                     mpReadBuffer;
-   
+
    /* Inturrupt URB */
    /*    Used to asynchronously notify when read data is available */
    struct urb *               mpIntURB;
 
    /* Buffer used by Inturrupt URB */
    void *                     mpIntBuffer;
-   
+
    /* Pointer to memory linked list for all clients */
    sClientMemList *           mpClientMemList;
-   
+
    /* Spinlock for client Memory entries */
    spinlock_t                 mClientMemLock;
 
@@ -305,26 +304,26 @@ typedef struct sQMIDev
 
 } sQMIDev;
 
-/*=========================================================================*/
-// Struct sEndpoints
-//
-//    Structure that defines the endpoints of the device
-/*=========================================================================*/
-typedef struct sEndpoints
-{
-   /* Interface number */
-   unsigned               mIntfNum;
+enum qos_flow_state {
+    FLOW_ACTIVATED = 0x01,
+    FLOW_SUSPENDED = 0x02,
+    FLOW_DELETED = 0x03,
+    FLOW_MODIFIED,
+    FLOW_ENABLED,
+    FLOW_DISABLED,
+    FLOW_INVALID = 0xff
+}; 
 
-   /* Interrupt in endpoint */
-   unsigned               mIntInEndp;
+typedef struct {
+    u8  dscp;
+    u32 qosId;
+    u8  state;
+} sMapping;
 
-   /* Bulk in endpoint */
-   unsigned               mBlkInEndp;
-
-   /* Bulk out endpoint */
-   unsigned               mBlkOutEndp;
-
-} sEndpoints;
+typedef struct {
+    u8 count;
+    sMapping table[MAX_MAP];
+} sMappingTable;
 
 /*=========================================================================*/
 // Struct sGobiUSBNet
@@ -339,13 +338,10 @@ typedef struct sGobiUSBNet
    /* Usb device interface */
    struct usb_interface * mpIntf;
 
-   /* Endpoint numbers */
-   sEndpoints *           mpEndpoints;
-
    /* Pointers to usbnet_open and usbnet_stop functions */
    int                  (* mpUSBNetOpen)(struct net_device *);
    int                  (* mpUSBNetStop)(struct net_device *);
-   
+
    /* Reason(s) why interface is down */
    /* Used by Gobi*DownReason */
    unsigned long          mDownReason;
@@ -362,9 +358,19 @@ typedef struct sGobiUSBNet
 
    /* Device MEID */
    char                   mMEID[14];
-   
+
    /* AutoPM thread */
    sAutoPM                mAutoPM;
+
+   /* Ethernet header templates */
+   /* IPv4 */
+   u8  eth_hdr_tmpl_ipv4[ETH_HLEN];
+   /* IPv6 */
+   u8  eth_hdr_tmpl_ipv6[ETH_HLEN];
+
+   u32 tx_qlen;
+
+   sMappingTable maps;
 
 } sGobiUSBNet;
 
@@ -378,10 +384,9 @@ typedef struct sQMIFilpStorage
 {
    /* Client ID */
    u16                  mClientID;
-   
+
    /* Device pointer */
-   sGobiUSBNet *        mpDev;
+   sGobiUSBNet *          mpDev;
 
 } sQMIFilpStorage;
-
 
