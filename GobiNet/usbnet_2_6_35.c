@@ -261,7 +261,7 @@ static void tx_complete (struct urb *urb)
       }
    }
 
-   usb_autopm_put_interface_async(dev->intf);
+   gobi_usb_autopm_put_interface_async(dev->intf);
    urb->dev = NULL;
    entry->state = tx_done;
    defer_bh(dev, skb, &dev->txq);
@@ -329,7 +329,7 @@ int gobi_usbnet_start_xmit_2_6_35 (struct sk_buff *skb, struct net_device *net)
    }
 
    spin_lock_irqsave(&dev->txq.lock, flags);
-   retval = usb_autopm_get_interface_async(dev->intf);
+   retval = gobi_usb_autopm_get_interface_async(dev->intf);
    if (retval < 0) {
       spin_unlock_irqrestore(&dev->txq.lock, flags);
       goto drop;
@@ -355,10 +355,10 @@ int gobi_usbnet_start_xmit_2_6_35 (struct sk_buff *skb, struct net_device *net)
    case -EPIPE:
       netif_stop_queue (net);
       usbnet_defer_kevent (dev, EVENT_TX_HALT);
-      usb_autopm_put_interface_async(dev->intf);
+      gobi_usb_autopm_put_interface_async(dev->intf);
       break;
    default:
-      usb_autopm_put_interface_async(dev->intf);
+      gobi_usb_autopm_put_interface_async(dev->intf);
       netif_dbg(dev, tx_err, dev->net,
            "tx: submit urb err %d\n", retval);
       break;

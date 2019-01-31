@@ -289,7 +289,7 @@ u16 QMIDMSGetMEIDReqSize( void );
 u16 QMIDMSSWISetFCCAuthReqSize( void );
 
 // Get size of buffer needed for QMUX + QMIWDASetDataFormatReq
-u16 QMIWDASetDataFormatReqSize( bool te_flow_control );
+u16 QMIWDASetDataFormatReqSize( int te_flow_control );
 
 // Get size of buffer needed for QMUX + QMICTLSetDataFormatReq
 u16  QMICTLSetDataFormatReqSize( void );
@@ -350,7 +350,7 @@ int QMIWDASetDataFormatReq(
    void *   pBuffer,
    u16      buffSize,
    u16      transactionID,
-   bool     te_flow_control,
+   int     te_flow_control,
    int      iDataMode);
 
 // Fill buffer with QMI CTL Set Data Format Request
@@ -454,3 +454,9 @@ u16 QMICTLConfigPowerSaveSettingsReqSize( void );
 int QMICTLConfigPowerSaveSettingsResp(
    void *   pBuffer,
    u16      buffSize );
+
+enum{
+   eSKIP_TE_FLOW_CONTROL_TLV=-1,
+   eTE_FLOW_CONTROL_TLV_0=0,
+   eTE_FLOW_CONTROL_TLV_1=1,
+};

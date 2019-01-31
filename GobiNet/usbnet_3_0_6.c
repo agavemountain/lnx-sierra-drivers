@@ -52,58 +52,58 @@ static unsigned short urb_count_pdn1 = 0;
 static unsigned short urb_count_pdn2 = 0;
 void URB_monitor (bool isUpCount,unsigned char interface)
 {
-/*	printk(KERN_WARNING "[%s] isUpCount %d, intf %d", \
-			__func__, isUpCount, interface);*/
-	if (isUpCount)
-	{
-		if (interface == PDN1_INTERFACE)
-		{
-			urb_count_pdn1++;
-		}
-		else if (interface == PDN2_INTERFACE)
-		{
-			urb_count_pdn2++;
-		}
-		else
-		{
-			// unknown interface. ignore or log as needed
-		}
-	}
-	else
-	{
-		if (interface == PDN1_INTERFACE)
-		{
-			urb_count_pdn1--;
-		}
-		else if (interface == PDN2_INTERFACE)
-		{
-			urb_count_pdn2--;
-		}
-		else
-		{
-			// unknown interface. ignore or log as needed
-		}	
-	}
-	if (BACK_PRESSURE_WATERMARK <= urb_count_pdn1)
-	{
-		// Back pressure on PDN1
-		printk(KERN_WARNING "[%s] Backpressure %d on PDN1", \
-				__func__, urb_count_pdn1);
-	}	
-	if (BACK_PRESSURE_WATERMARK <= urb_count_pdn2)
-	{
-		// Back pressure on PDN2
-		printk(KERN_WARNING "[%s] Backpressure %d on PDN2", \
-				__func__, urb_count_pdn2);
-	}	
+/*   printk(KERN_WARNING "[%s] isUpCount %d, intf %d", \
+         __func__, isUpCount, interface);*/
+   if (isUpCount)
+   {
+      if (interface == PDN1_INTERFACE)
+      {
+         urb_count_pdn1++;
+      }
+      else if (interface == PDN2_INTERFACE)
+      {
+         urb_count_pdn2++;
+      }
+      else
+      {
+         // unknown interface. ignore or log as needed
+      }
+   }
+   else
+   {
+      if (interface == PDN1_INTERFACE)
+      {
+         urb_count_pdn1--;
+      }
+      else if (interface == PDN2_INTERFACE)
+      {
+         urb_count_pdn2--;
+      }
+      else
+      {
+         // unknown interface. ignore or log as needed
+      }   
+   }
+   if (BACK_PRESSURE_WATERMARK <= urb_count_pdn1)
+   {
+      // Back pressure on PDN1
+      printk(KERN_WARNING "[%s] Backpressure %d on PDN1", \
+            __func__, urb_count_pdn1);
+   }   
+   if (BACK_PRESSURE_WATERMARK <= urb_count_pdn2)
+   {
+      // Back pressure on PDN2
+      printk(KERN_WARNING "[%s] Backpressure %d on PDN2", \
+            __func__, urb_count_pdn2);
+   }   
 }
 #endif // 0 End of dummy function
 
 // Get the USB interface from a usbnet pointer. The function return 0 on success, -1 on error
-__always_inline static int get_usb_interface_from_device (struct usbnet	*dev, unsigned char *pb_usb_interface)
+__always_inline static int get_usb_interface_from_device (struct usbnet   *dev, unsigned char *pb_usb_interface)
 {
-    int iRet = -1; // set to error by default	
-	
+    int iRet = -1; // set to error by default   
+   
     if ((NULL!=dev) && (NULL!=pb_usb_interface))
     {
         if ((NULL != dev->intf) &&
@@ -119,9 +119,9 @@ __always_inline static int get_usb_interface_from_device (struct usbnet	*dev, un
 // Get the USB interface from a URB. The function return 0 on success, -1 on error
 __always_inline static int get_usb_interface (struct urb * pURB, unsigned char *pb_usb_interface)
 {
-    int iRet = -1; // set to error by default	
+    int iRet = -1; // set to error by default   
     struct sk_buff  *skb   = NULL;
-    struct skb_data	*entry = NULL;
+    struct skb_data   *entry = NULL;
 
     if ((NULL!=pURB) && (NULL!=pb_usb_interface))
     { 
@@ -141,40 +141,40 @@ __always_inline static int get_usb_interface (struct urb * pURB, unsigned char *
 // unlink pending rx/tx; completion handlers do all other cleanup
 static int unlink_urbs (struct usbnet *dev, struct sk_buff_head *q)
 {
-	unsigned long		flags;
-	struct sk_buff		*skb, *skbnext;
-	int			count = 0;
+   unsigned long      flags;
+   struct sk_buff      *skb, *skbnext;
+   int         count = 0;
 
-	spin_lock_irqsave (&q->lock, flags);
-	skb_queue_walk_safe(q, skb, skbnext) {
-		struct skb_data		*entry;
-		struct urb		*urb;
-		int			retval;
+   spin_lock_irqsave (&q->lock, flags);
+   skb_queue_walk_safe(q, skb, skbnext) {
+      struct skb_data      *entry;
+      struct urb      *urb;
+      int         retval;
 
-		entry = (struct skb_data *) skb->cb;
-		urb = entry->urb;
+      entry = (struct skb_data *) skb->cb;
+      urb = entry->urb;
 
-		// during some PM-driven resume scenarios,
-		// these (async) unlinks complete immediately
-		retval = usb_unlink_urb (urb);
-		if (retval != -EINPROGRESS && retval != 0)
-		  netdev_dbg(dev->net, "unlink urb err, %d\n", retval);
-		else
-			count++;
-	}
-	spin_unlock_irqrestore (&q->lock, flags);
-	return count;
+      // during some PM-driven resume scenarios,
+      // these (async) unlinks complete immediately
+      retval = usb_unlink_urb (urb);
+      if (retval != -EINPROGRESS && retval != 0)
+        netdev_dbg(dev->net, "unlink urb err, %d\n", retval);
+      else
+         count++;
+   }
+   spin_unlock_irqrestore (&q->lock, flags);
+   return count;
 }
 
 void gobi_usbnet_tx_timeout_3_0_6 (struct net_device *net)
 {
-   struct usbnet		*dev = netdev_priv(net);
+   struct usbnet      *dev = netdev_priv(net);
 #ifdef TX_URB_MONITOR
    int count = 0;   
    int iRet = -1;
    unsigned char b_usb_if_num = 0;
    // Get the USB interface
-   iRet = get_usb_interface_from_device (dev, &b_usb_if_num);	
+   iRet = get_usb_interface_from_device (dev, &b_usb_if_num);   
 
    count = unlink_urbs (dev, &dev->txq);
    tasklet_schedule (&dev->bh);
@@ -182,10 +182,10 @@ void gobi_usbnet_tx_timeout_3_0_6 (struct net_device *net)
    if ((URB_monitor) && (0==iRet))
    {
        while (count)
-	   {
-			URB_monitor(false, b_usb_if_num);
-			count--;
-	   }
+      {
+         URB_monitor(false, b_usb_if_num);
+         count--;
+      }
    }
 #else // TX_URB_MONITOR
    unlink_urbs (dev, &dev->txq);
@@ -200,7 +200,7 @@ void gobi_usbnet_tx_timeout_3_0_6 (struct net_device *net)
 
 static void defer_bh(struct usbnet *dev, struct sk_buff *skb, struct sk_buff_head *list)
 {
-   unsigned long		flags;
+   unsigned long      flags;
 
    spin_lock_irqsave(&list->lock, flags);
    __skb_unlink(skb, list);
@@ -214,12 +214,12 @@ static void defer_bh(struct usbnet *dev, struct sk_buff *skb, struct sk_buff_hea
 
 static void tx_complete (struct urb *urb)
 {
-   struct sk_buff		*skb = (struct sk_buff *) urb->context;
-   struct skb_data		*entry = (struct skb_data *) skb->cb;
-   struct usbnet		*dev = entry->dev;
+   struct sk_buff      *skb = (struct sk_buff *) urb->context;
+   struct skb_data      *entry = (struct skb_data *) skb->cb;
+   struct usbnet      *dev = entry->dev;
 
 #ifdef TX_URB_MONITOR
-	unsigned char b_usb_if_num = 0;
+   unsigned char b_usb_if_num = 0;
     int iRet = get_usb_interface(urb, &b_usb_if_num);
 #endif //#ifdef TX_URB_MONITOR
 
@@ -239,8 +239,8 @@ static void tx_complete (struct urb *urb)
             break;
        
          /* software-driven interface shutdown */
-         case -ECONNRESET:		// async unlink
-         case -ESHUTDOWN:		// hardware gone
+         case -ECONNRESET:      // async unlink
+         case -ESHUTDOWN:      // hardware gone
             break;
        
          // like rx, tx gets controller i/o faults during khubd delays
@@ -256,8 +256,8 @@ static void tx_complete (struct urb *urb)
                devdbg (dev, "tx throttle %d",
                             urb->status);
             #else
-			         	netif_dbg(dev, link, dev->net,
-				                  	  "tx throttle %d\n", urb->status);
+                     netif_dbg(dev, link, dev->net,
+                                   "tx throttle %d\n", urb->status);
             #endif
             }
             netif_stop_queue (dev->net);
@@ -267,14 +267,14 @@ static void tx_complete (struct urb *urb)
             #if (LINUX_VERSION_CODE != KERNEL_VERSION( 3,0,6 ))
                devdbg (dev, "tx err %d", entry->urb->status);
             #else
-			          netif_dbg(dev, tx_err, dev->net,
-				                       "tx err %d\n", entry->urb->status);
+               netif_dbg(dev, tx_err, dev->net,
+                           "tx err %d\n", entry->urb->status);
             #endif
             break;
-    		}
-  	}
+      }
+   }
 
-   usb_autopm_put_interface_async(dev->intf);
+   gobi_usb_autopm_put_interface_async(dev->intf);
    urb->dev = NULL;
    entry->state = tx_done;
    defer_bh(dev, skb, &dev->txq);
@@ -289,111 +289,111 @@ static void tx_complete (struct urb *urb)
 }
 
 netdev_tx_t gobi_usbnet_start_xmit_3_0_6 (struct sk_buff *skb,
-				     struct net_device *net)
+                 struct net_device *net)
 {
-	struct usbnet		*dev = netdev_priv(net);
-	int			length;
-	struct urb		*urb = NULL;
-	struct skb_data		*entry;
-	struct driver_info	*info = dev->driver_info;
-	unsigned long		flags;
-	int retval;
+   struct usbnet      *dev = netdev_priv(net);
+   int         length;
+   struct urb      *urb = NULL;
+   struct skb_data      *entry;
+   struct driver_info   *info = dev->driver_info;
+   unsigned long      flags;
+   int retval;
 #ifdef TX_URB_MONITOR   
    unsigned char b_usb_if_num = 0;
    int iRet = -1;
 #endif //#ifdef TX_URB_MONITOR
 
-	// some devices want funky USB-level framing, for
-	// win32 driver (usually) and/or hardware quirks
-	if (info->tx_fixup) {
-		skb = info->tx_fixup (dev, skb, GFP_ATOMIC);
-		if (!skb) {
-			if (netif_msg_tx_err(dev)) {
-				netif_dbg(dev, tx_err, dev->net, "can't tx_fixup skb\n");
-				goto drop;
-			} else {
-				/* cdc_ncm collected packet; waits for more */
-				goto not_drop;
-			}
-		}
-	}
-	length = skb->len;
+   // some devices want funky USB-level framing, for
+   // win32 driver (usually) and/or hardware quirks
+   if (info->tx_fixup) {
+      skb = info->tx_fixup (dev, skb, GFP_ATOMIC);
+      if (!skb) {
+         if (netif_msg_tx_err(dev)) {
+            netif_dbg(dev, tx_err, dev->net, "can't tx_fixup skb\n");
+            goto drop;
+         } else {
+            /* cdc_ncm collected packet; waits for more */
+            goto not_drop;
+         }
+      }
+   }
+   length = skb->len;
 
-	if (!(urb = usb_alloc_urb (0, GFP_ATOMIC))) {
-		netif_dbg(dev, tx_err, dev->net, "no urb\n");
-		goto drop;
-	}
+   if (!(urb = usb_alloc_urb (0, GFP_ATOMIC))) {
+      netif_dbg(dev, tx_err, dev->net, "no urb\n");
+      goto drop;
+   }
 
-	entry = (struct skb_data *) skb->cb;
-	entry->urb = urb;
-	entry->dev = dev;
-	entry->state = tx_start;
-	entry->length = length;
+   entry = (struct skb_data *) skb->cb;
+   entry->urb = urb;
+   entry->dev = dev;
+   entry->state = tx_start;
+   entry->length = length;
 
-	usb_fill_bulk_urb (urb, dev->udev, dev->out,
-			skb->data, skb->len, tx_complete, skb);
+   usb_fill_bulk_urb (urb, dev->udev, dev->out,
+         skb->data, skb->len, tx_complete, skb);
 
-	/* don't assume the hardware handles USB_ZERO_PACKET
-	 * NOTE:  strictly conforming cdc-ether devices should expect
-	 * the ZLP here, but ignore the one-byte packet.
-	 * NOTE2: CDC NCM specification is different from CDC ECM when
-	 * handling ZLP/short packets, so cdc_ncm driver will make short
-	 * packet itself if needed.
-	 */
-	if (length % dev->maxpacket == 0) {
-		if (!(info->flags & FLAG_SEND_ZLP)) {
-			if (!(info->flags & FLAG_MULTI_PACKET)) {
-				urb->transfer_buffer_length++;
-				if (skb_tailroom(skb)) {
-					skb->data[skb->len] = 0;
-					__skb_put(skb, 1);
-				}
-			}
-		} else
-			urb->transfer_flags |= URB_ZERO_PACKET;
-	}
+   /* don't assume the hardware handles USB_ZERO_PACKET
+    * NOTE:  strictly conforming cdc-ether devices should expect
+    * the ZLP here, but ignore the one-byte packet.
+    * NOTE2: CDC NCM specification is different from CDC ECM when
+    * handling ZLP/short packets, so cdc_ncm driver will make short
+    * packet itself if needed.
+    */
+   if (length % dev->maxpacket == 0) {
+      if (!(info->flags & FLAG_SEND_ZLP)) {
+         if (!(info->flags & FLAG_MULTI_PACKET)) {
+            urb->transfer_buffer_length++;
+            if (skb_tailroom(skb)) {
+               skb->data[skb->len] = 0;
+               __skb_put(skb, 1);
+            }
+         }
+      } else
+         urb->transfer_flags |= URB_ZERO_PACKET;
+   }
 
-	spin_lock_irqsave(&dev->txq.lock, flags);
-	retval = usb_autopm_get_interface_async(dev->intf);
-	if (retval < 0) {
-		spin_unlock_irqrestore(&dev->txq.lock, flags);
-		goto drop;
-	}
+   spin_lock_irqsave(&dev->txq.lock, flags);
+   retval = gobi_usb_autopm_get_interface_async(dev->intf);
+   if (retval < 0) {
+      spin_unlock_irqrestore(&dev->txq.lock, flags);
+      goto drop;
+   }
 
 #ifdef CONFIG_PM
-	/* if this triggers the device is still a sleep */
-	if (test_bit(EVENT_DEV_ASLEEP, &dev->flags)) {
-		/* transmission will be done in resume */
-		usb_anchor_urb(urb, &dev->deferred);
-		/* no use to process more packets */
-		netif_stop_queue(net);
-		spin_unlock_irqrestore(&dev->txq.lock, flags);
-		netdev_dbg(dev->net, "Delaying transmission for resumption\n");
-		goto deferred;
-	}
+   /* if this triggers the device is still a sleep */
+   if (test_bit(EVENT_DEV_ASLEEP, &dev->flags)) {
+      /* transmission will be done in resume */
+      usb_anchor_urb(urb, &dev->deferred);
+      /* no use to process more packets */
+      netif_stop_queue(net);
+      spin_unlock_irqrestore(&dev->txq.lock, flags);
+      netdev_dbg(dev->net, "Delaying transmission for resumption\n");
+      goto deferred;
+   }
 #endif
 
 #ifdef TX_URB_MONITOR
    iRet = get_usb_interface(urb, &b_usb_if_num);
 #endif //#ifdef TX_URB_MONITOR  
 
-	switch ((retval = usb_submit_urb (urb, GFP_ATOMIC))) {
-	case -EPIPE:
-		netif_stop_queue (net);
-		usbnet_defer_kevent (dev, EVENT_TX_HALT);
-		usb_autopm_put_interface_async(dev->intf);
-		break;
-	default:
-		usb_autopm_put_interface_async(dev->intf);
-		netif_dbg(dev, tx_err, dev->net,
-			  "tx: submit urb err %d\n", retval);
-		break;
-	case 0:
-		net->trans_start = jiffies;
-		__skb_queue_tail (&dev->txq, skb);
-		if (dev->txq.qlen >= TX_QLEN (dev))
-			netif_stop_queue (net);
-	}
+   switch ((retval = usb_submit_urb (urb, GFP_ATOMIC))) {
+   case -EPIPE:
+      netif_stop_queue (net);
+      usbnet_defer_kevent (dev, EVENT_TX_HALT);
+      gobi_usb_autopm_put_interface_async(dev->intf);
+      break;
+   default:
+      gobi_usb_autopm_put_interface_async(dev->intf);
+      netif_dbg(dev, tx_err, dev->net,
+           "tx: submit urb err %d\n", retval);
+      break;
+   case 0:
+      net->trans_start = jiffies;
+      __skb_queue_tail (&dev->txq, skb);
+      if (dev->txq.qlen >= TX_QLEN (dev))
+         netif_stop_queue (net);
+   }
 #ifdef TX_URB_MONITOR
    /*
     * This can be called from here or from inside the
@@ -410,23 +410,23 @@ netdev_tx_t gobi_usbnet_start_xmit_3_0_6 (struct sk_buff *skb,
    }
 #endif //#ifdef TX_URB_MONITOR
 
-	spin_unlock_irqrestore (&dev->txq.lock, flags);
+   spin_unlock_irqrestore (&dev->txq.lock, flags);
 
-	if (retval) {
-		netif_dbg(dev, tx_err, dev->net, "drop, code %d\n", retval);
+   if (retval) {
+      netif_dbg(dev, tx_err, dev->net, "drop, code %d\n", retval);
 drop:
-		dev->net->stats.tx_dropped++;
+      dev->net->stats.tx_dropped++;
 not_drop:
-		if (skb)
-			dev_kfree_skb_any (skb);
-		usb_free_urb (urb);
-	} else
-		netif_dbg(dev, tx_queued, dev->net,
-			  "> tx, len %d, type 0x%x\n", length, skb->protocol);
+      if (skb)
+         dev_kfree_skb_any (skb);
+      usb_free_urb (urb);
+   } else
+      netif_dbg(dev, tx_queued, dev->net,
+           "> tx, len %d, type 0x%x\n", length, skb->protocol);
 #ifdef CONFIG_PM
 deferred:
 #endif
-	return NETDEV_TX_OK;
+   return NETDEV_TX_OK;
 }
 #endif /* #if (LINUX_VERSION_CODE == KERNEL_VERSION( 3,0,6 )) */
 
