@@ -89,7 +89,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2014-07-21/SWI_2.20"
+#define DRIVER_VERSION "2015-01-23/SWI_2.22"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -192,7 +192,7 @@ int GobiSerialResume( struct usb_interface * pIntf );
 
 #define MDM9X15_DEVICE(vend, prod) \
 	USB_DEVICE(vend, prod), \
-	.driver_info = BIT(8) | BIT(10) | BIT(11)
+	.driver_info = BIT(1) | BIT(8) | BIT(10) | BIT(11)
 
 #define G3K_DEVICE(vend, prod) \
 	USB_DEVICE(vend, prod), \
@@ -217,7 +217,6 @@ static inline void Gobi_unlock_disc_mutex(struct usb_serial *serial) {}
 /* use the legacy method of locking disc_mutex in this driver */
 #warning "Using legacy method of locking disc_mutex"
 static inline void Gobi_lock_disc_mutex(struct usb_serial *serial) {
-   WARN_ON(mutex_is_locked(&serial->disc_mutex));
    mutex_lock(&serial->disc_mutex);
 }
 static inline void Gobi_unlock_disc_mutex(struct usb_serial *serial) {
@@ -239,6 +238,12 @@ static struct usb_device_id GobiVIDPIDTable[] =
    },
    /* Sierra Wireless QMI MC78/WP7/AR7 */
    { USB_DEVICE(0x1199, 0x68C0),
+      /* blacklist the interface 1,4,5,6, 12 and 13 for AR7 */
+      .driver_info = BIT(1) | BIT(4) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+
+   /* Sierra Wireless QMI MC74xx/EM74xx */
+   { USB_DEVICE(0x1199, 0x9071),
       /* blacklist the interface 1,4,5,6, 12 and 13 for AR7 */
       .driver_info = BIT(1) | BIT(4) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
@@ -664,6 +669,7 @@ bool IsGPSPort(struct usb_serial_port *   pPort )
       case 0x68A2:  /* Sierra Wireless QMI */
       case 0x68C0:
       case 0x9041:
+      case 0x9071:
          if (pPort->serial->interface->cur_altsetting->desc.bInterfaceNumber == 2)
             return true;
          break;
@@ -747,7 +753,7 @@ int GobiOpen(
                               (void *)&startMessage[0],
                               sizeof( startMessage ),
                               &bytesWrote,
-                              1000 );
+                              100 );
       if (nResult != 0)
       {
          DBG( "error %d sending startMessage\n", nResult );
@@ -850,7 +856,7 @@ void GobiClose( struct usb_serial_port * pPort )
                               (void *)&stopMessage[0],
                               sizeof( stopMessage ),
                               &bytesWrote,
-                              1000 );
+                              100 );
       if (nResult != 0)
       {
          DBG( "error %d sending stopMessage\n", nResult );
@@ -1034,7 +1040,8 @@ void GobiReadBulkCallback(struct urb *urb)
         if (urb == port->read_urbs[i])
             break;
     }
-    set_bit(i, &port->read_urbs_free);
+    if (i < ARRAY_SIZE(port->read_urbs))
+        set_bit(i, &port->read_urbs_free);
     #endif
 
     /* only ignore bulk callback after the bit of read_urbs_free was set,
@@ -1075,8 +1082,9 @@ void GobiReadBulkCallback(struct urb *urb)
     if (!port->throttled)
     {
         spin_unlock_irqrestore(&port->lock, flags);
-        #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,3,0 )) 
-        usb_serial_generic_submit_read_urb(port, i, GFP_ATOMIC);
+        #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,3,0 ))
+        if (i < ARRAY_SIZE(port->read_urbs))        
+            usb_serial_generic_submit_read_urb(port, i, GFP_ATOMIC);
         #elif (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,35 )) 
         usb_serial_generic_submit_read_urb(port, GFP_ATOMIC);
         #else

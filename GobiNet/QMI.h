@@ -162,6 +162,12 @@ extern int qos_debug;
 #define QOS_STATUS (0x26)
 #define QOS_NET_SUPPORT (0x27)
 
+// throttle rx/tx briefly after some faults, so khubd might disconnect()
+// us (it polls at HZ/4 usually) before we report too many false errors.
+#define THROTTLE_JIFFIES   (HZ/8)
+#define RX_MAX_QUEUE_MEMORY (60 * 1518)
+#define	TX_QLEN(dev) (((dev)->udev->speed == USB_SPEED_HIGH) ? \
+			(RX_MAX_QUEUE_MEMORY/(dev)->hard_mtu) : 4)
 /*=========================================================================*/
 // Struct sQMUX
 //
