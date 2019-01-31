@@ -977,7 +977,7 @@ int StartRead( sGobiUSBNet * pDev )
                      usb_rcvintpipe( pDev->mpNetDev->udev,
                                      pendp->bEndpointAddress),
                      pDev->mQMIDev.mpIntBuffer,
-                     pendp->wMaxPacketSize,
+                     le16_to_cpu(pendp->wMaxPacketSize),
                      IntCallback,
                      pDev,
                      interval );

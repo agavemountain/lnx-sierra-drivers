@@ -107,7 +107,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2015-03-09/SWI_2.30"
+#define DRIVER_VERSION "2015-04-02/SWI_2.31"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -1062,6 +1062,11 @@ int GobiUSBNetStartXmit(
       DBG( "failed to get QMIDevice\n" );
       return NETDEV_TX_BUSY;
    }
+   /* send out the packet when data connection status is connected */
+   if ( pGobiDev->bLinkState == false)
+   {
+       return NET_XMIT_DROP;
+   }
    pAutoPM = &pGobiDev->mAutoPM;
 
    if( NULL == pSKB )
@@ -1494,18 +1499,6 @@ fix_dest:
     return 1;
 }
 
-int GobiNetCheckConnect(struct usbnet *pDev) {
-    struct sGobiUSBNet * pGobiDev;
-    pGobiDev = (sGobiUSBNet *)pDev->data[0];
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,3,0 ))
-    netif_info(pDev, link, pDev->net,
-            "bLinkState %d\n", pGobiDev->bLinkState);
-#else
-    DBG("bLinkState %d\n", pGobiDev->bLinkState);
-#endif
-    return !pGobiDev->bLinkState;
-};
-
 /*=========================================================================*/
 // Struct driver_info
 /*=========================================================================*/
@@ -1525,7 +1518,6 @@ static const struct driver_info GobiNetInfo_qmi = {
 #else
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
-   .check_connect = GobiNetCheckConnect,
    .data          = BIT(8) | BIT(19) |
                      BIT(10), /* MDM9x15 PDNs */
 };
@@ -1545,7 +1537,6 @@ static const struct driver_info GobiNetInfo_gobi = {
 #else
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
-   .check_connect = GobiNetCheckConnect,
    .data          = BIT(0) | BIT(5),
 };
 
@@ -1564,7 +1555,6 @@ static const struct driver_info GobiNetInfo_9x15 = {
 #else
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
-   .check_connect = GobiNetCheckConnect,
    .data          = BIT(8) | BIT(10) | BIT(BIT_9X15),
 };
 
