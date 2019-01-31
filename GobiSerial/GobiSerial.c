@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-12-22/SWI_2.31"
+#define DRIVER_VERSION "2018-06-22/SWI_2.33"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -115,6 +115,8 @@ static int ignore_gps_start_error = 1;
 static int delay_open_gps_port = OPEN_GPS_DELAY_IN_SECOND;
 // Number of serial interfaces
 static int nNumInterfaces;
+// Enable Zero Lenght Payload on USB3 in QDL Mode
+static int iusb3_zlp_enable = 1;
 
 // Global pointer to usb_serial_generic_close function
 // This function is not exported, which is why we have to use a pointer
@@ -194,6 +196,13 @@ int GobiUSBSerialSuspend(struct usb_serial *serial, pm_message_t message);
 int GobiUSBSerialResume(struct usb_serial *serial);
 int GobiUSBSerialResetResume(struct usb_serial *serial);
 void GobiUSBSerialDisconnect(struct usb_serial * serial);
+static int Gobi_write(struct tty_struct *tty, struct usb_serial_port *port,
+               const unsigned char *buf, int count);
+bool IsDeviceUnbinding(struct usb_serial *serial);
+void GobiUSBSendZeroConfigMsg(struct usb_serial *serial);
+int gobi_usb_bulk_msg(struct usb_device *usb_dev, unsigned int pipe,
+   void *data, int len, int *actual_length,
+   int timeout);
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,23 ))
 
@@ -253,7 +262,8 @@ static struct usb_device_id GobiVIDPIDTable[] =
    /* Sierra Wireless QMI MC78/WP7/AR7 */
    { USB_DEVICE(0x1199, 0x68C0),
       /* blacklist the interface */
-      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+      /* whitelist interfaces 5 for raw data */
+      .driver_info = BIT(1) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
 
    /* Sierra Wireless QMI MC74xx/EM74xx */
@@ -353,6 +363,7 @@ struct sierra_port_private {
    int isClosing;
    int iGPSStartState;
    unsigned long ulExpires;
+   int iUsb3ZlpEnable;
 };
 
 int gobi_usb_serial_generic_resume(struct usb_interface *intf)
@@ -517,12 +528,56 @@ static int Gobi_startup(struct usb_serial *serial)
       privatedata->iGPSStartState = eSendUnknown;
       privatedata->ulExpires = jiffies + msecs_to_jiffies(delay_open_gps_port*1000);
       port = serial->port[i];
-
+      privatedata->iUsb3ZlpEnable = iusb3_zlp_enable;
       /* Set the port private data pointer */
       usb_set_serial_port_data(port, portdata);
    }
 
    return 0;
+}
+
+void GobiUSBSendZeroConfigMsg(struct usb_serial *serial)
+{
+   int ret = 0;
+   DBG("\n");
+   if(!serial)
+   {
+      return ;
+   }
+   if(!serial->dev)
+   {
+      return ;
+   }
+   ret = usb_control_msg(serial->dev, usb_sndctrlpipe(serial->dev, 0),
+   USB_REQ_SET_CONFIGURATION, 0,
+   serial->dev->actconfig->desc.bConfigurationValue, 0,
+   NULL, 0, USB_CTRL_SET_TIMEOUT);
+   if (ret < 0) 
+   {
+      printk( KERN_INFO "Send ZERO CONF FAIL!\n" );
+   }
+}
+
+bool IsDeviceUnbinding(struct usb_serial *serial)
+{
+   DBG("\n");
+   if(!serial)
+   {
+      return false;
+   }
+   if(!interface_to_usbdev(serial->interface))
+   {
+      return false;
+   }
+   if (interface_to_usbdev(serial->interface)->state == USB_STATE_NOTATTACHED )
+   {
+      return false;
+   }
+   if(serial->interface->condition == USB_INTERFACE_UNBINDING)
+   {
+      return true;
+   }
+   return false;
 }
 
 static void Gobi_release(struct usb_serial *serial)
@@ -558,6 +613,11 @@ static void Gobi_release(struct usb_serial *serial)
       usb_set_serial_port_data(port, NULL);
    }
    kfree(intfdata);
+   //Set USB CONFIGURATION to ZERO
+   if(IsDeviceUnbinding(serial))
+   {
+      GobiUSBSendZeroConfigMsg(serial);
+   }
 }
 
 /*=========================================================================*/
@@ -581,6 +641,7 @@ static struct usb_serial_driver gGobiDevice =
    .num_bulk_in         = 1,
    .num_bulk_out        = 1,
 #endif
+   .write                 = Gobi_write,
 
    /* TODO PowerPC RD1020DB kernel 3.0 support
     */
@@ -879,7 +940,7 @@ int GobiOpen(
       // Send startMessage, USB_CTRL_SET_TIMEOUT timeout
       do
       {
-        nResult = usb_bulk_msg( pPort->serial->dev,
+        nResult = gobi_usb_bulk_msg( pPort->serial->dev,
                               usb_sndbulkpipe( pPort->serial->dev,
                                                pPort->bulk_out_endpointAddress ),
                               (void *)&startMessage[0],
@@ -993,7 +1054,7 @@ void GobiClose( struct usb_serial_port * pPort )
    {
       DBG( "GPS Port detected! send GPS_STOP!\n" );
       // Send stopMessage, 1s timeout
-      nResult = usb_bulk_msg( pPort->serial->dev,
+      nResult = gobi_usb_bulk_msg( pPort->serial->dev,
                               usb_sndbulkpipe( pPort->serial->dev,
                                                pPort->bulk_out_endpointAddress ),
                               (void *)&stopMessage[0],
@@ -1494,6 +1555,127 @@ static void __exit GobiExit( void )
 #endif
 }
 
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 3,2,0 ))
+static inline int usb_endpoint_maxp(const struct usb_endpoint_descriptor *epd)
+{
+   return le16_to_cpu(epd->wMaxPacketSize);
+}
+#endif
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,35 ))
+static inline struct usb_host_endpoint *
+usb_pipe_endpoint(struct usb_device *dev, unsigned int pipe)
+{
+   struct usb_host_endpoint **eps;
+   eps = usb_pipein(pipe) ? dev->ep_in : dev->ep_out;
+   return eps[usb_pipeendpoint(pipe)];
+}
+#endif
+
+/*===========================================================================
+METHOD:
+   Gobi_write (Free Method)
+
+DESCRIPTION:
+   call usb_serial_generic_write and conditionally add zero lenght payload.
+
+PARAMETERS:
+   pTTY    [ I ] - TTY structure
+   pPort   [ I ] - USB serial port structure
+   buf     [ I ] - write buffer
+   count   [ I ] - number of buffer need to be writen.
+
+RETURN VALUE:
+   int - usb_serial_generic_write return value
+===========================================================================*/
+static int Gobi_write(struct tty_struct *pTTY, struct usb_serial_port *pPort,
+               const unsigned char *buf, int count)
+{
+   int result = usb_serial_generic_write(pTTY, pPort, buf, count);
+   struct usb_serial *pSerial;
+   struct usb_host_endpoint *ep;
+   struct sierra_port_private *portdata;
+   if(pPort)
+   {
+      if(pPort->serial->interface->cur_altsetting->desc.bInterfaceNumber!=0)
+      {
+         return result;
+      }
+   }
+   pSerial = pPort->serial;
+   if(pSerial)
+   {
+      if(pSerial->dev->actconfig->desc.bNumInterfaces!=1)
+      {
+         return result;
+      }
+   }
+   portdata = usb_get_serial_port_data(pPort);
+   if(portdata)
+   {
+      if((result ==count)&&(portdata->iUsb3ZlpEnable))
+      {
+         if(pSerial->dev->speed >= USB_SPEED_SUPER)
+         {
+            int pipe=0, len=0, size=0;
+            ep = usb_pipe_endpoint(pSerial->dev, pipe);
+            if (!(count % usb_endpoint_maxp(&ep->desc)))
+            {
+               pipe = usb_sndbulkpipe(pSerial->dev, pPort->bulk_out_endpointAddress);
+               gobi_usb_bulk_msg(pSerial->dev, pipe, NULL, size,
+                             &len, 3000);
+            }
+         }
+      }
+   }   
+   return result;
+}
+
+/*===========================================================================
+METHOD:
+   gobi_usb_bulk_msg (private Method)
+
+DESCRIPTION:
+   call usb_bulk_msg and alloc buffer if a data address is within the vmalloc range.
+
+PARAMETERS:
+   usb_dev [ I ] - pointer to the usb device to send the message to
+   pipe    [ I ] - endpoint "pipe" to send the message to
+   data    [ I ] - pointer to the data to send
+   len     [ I ] - length in bytes of the data to send
+   actual_length     [ O ] - pointer to a location to put the actual 
+   length transferred in bytes
+   timeout [ I ] - time in msecs to wait for the message to complete 
+   before timing out (if 0 the wait is forever)
+
+RETURN VALUE:
+   int - usb_bulk_msg return value
+===========================================================================*/
+int gobi_usb_bulk_msg(struct usb_device *usb_dev, unsigned int pipe,
+   void *data, int len, int *actual_length,
+   int timeout)
+{
+   void *pBuf = NULL;
+   int ret = 0;
+   
+   pBuf = kzalloc(len,GFP_KERNEL);
+   if(!pBuf)
+   {
+      DBG("MEM ERROR!\n");
+      return -ENOMEM;
+   }
+   memcpy(pBuf,data,len);
+
+   ret = usb_bulk_msg(usb_dev,pipe,pBuf,len,actual_length,timeout);
+   if(pBuf!=data)
+   {
+      kfree(pBuf);
+      pBuf = NULL;
+   }
+   return ret;
+}
+
 // Calling kernel module to init our driver
 module_init( GobiInit );
 module_exit( GobiExit );
@@ -1512,3 +1694,6 @@ MODULE_PARM_DESC( ignore_gps_start_error,
    "allow port open to success even when GPS control message failed");
 module_param( delay_open_gps_port, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( delay_open_gps_port, "Delay Open GPS Port, after device ready" );
+module_param( iusb3_zlp_enable, int, S_IRUGO | S_IWUSR );
+MODULE_PARM_DESC( iusb3_zlp_enable, "0 = Disable , 1 (default) ZLP on USB3 in QDL mode" );
+

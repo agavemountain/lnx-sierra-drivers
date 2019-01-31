@@ -108,6 +108,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #define MAX_RETRY_TASK_LOCK_TIME 10
 #define MAX_RETRY_TASK_MSLEEP_TIME 5
 #define MAX_DEVICE_MEID_SIZE 14
+#define MAX_SVC_VERSION_SIZE 512
 
 //Max number of QMUX supported 
 #define MAX_MUX_NUMBER_SUPPORTED 8
@@ -465,6 +466,9 @@ typedef struct sGobiUSBNet
 
    /* Device MEID */
    char                   mMEID[MAX_DEVICE_MEID_SIZE];
+
+   /* Service version Info */
+   u8                     svcVersion[MAX_SVC_VERSION_SIZE];
 
    /* AutoPM thread */
    sAutoPM                mAutoPM;

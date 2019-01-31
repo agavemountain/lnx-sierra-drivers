@@ -59,6 +59,7 @@ FUNCTIONS:
       SetupQMIWDSCallback
       QMIDMSGetMEID
       QMIDMSSWISetFCCAuth
+      QMICTLGetVersionInfo
 
 Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
@@ -423,6 +424,9 @@ int QMIWDASetQMAP( sGobiUSBNet * pDev , u16 WDAClientID);
 // send req and parse Data format response
 int QMICTLSetDataFormat( sGobiUSBNet * pDev );
 
+// send req and parse Data format response
+int QMICTLGetVersionInfo( sGobiUSBNet * pDev );
+
 // Initialize Read Sync tasks semaphore
 void InitSemID(sGobiUSBNet * pDev);
 
@@ -515,7 +519,8 @@ int iIsValidQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset);
 int iIsZeroQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset);
 //Check Command QMAP header in SKB.
 int iIsCMDQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset);
-
+//Remove QMAP header and Padding Bytes
+int iRemoveQMAPPaddingBytes(struct sk_buff *skb);
 
 // Init WorkQueues
 int GobiInitWorkQueue(sGobiUSBNet *pGobiDev);

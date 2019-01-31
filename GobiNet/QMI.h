@@ -24,6 +24,7 @@ FUNCTIONS:
       QMIWDSGetPKGSRVCStatusReqSize
       QMIDMSGetMEIDReqSize
       QMICTLSyncReqSize
+      QMICTLGetVersionInfoReqSize
 
    Fill Buffers with QMI requests
       QMICTLGetClientIDReq
@@ -34,6 +35,7 @@ FUNCTIONS:
       QMIDMSGetMEIDReq
       QMICTLSetDataFormatReq
       QMICTLSyncReq
+      QMICTLGetVersionInfoReq
 
    Parse data from QMI responses
       QMICTLGetClientIDResp
@@ -41,6 +43,7 @@ FUNCTIONS:
       QMIWDSEventResp
       QMIDMSGetMEIDResp
       QMICTLSetDataFormatResp
+      QMICTLGetVersionInfoResp
 
 Copyright (c) 2011, Code Aurora Forum. All rights reserved.
 
@@ -194,6 +197,7 @@ if(qos_debug == 1)\
 
 #define QMAP_SIZE_OF_RX_BUFFER 32768
 
+#define QMAP_MAX_PADDING_BYTES 64
 //Register State
 enum {
    eStatRegister=0,
@@ -313,6 +317,9 @@ u16  QMICTLSetDataFormatReqSize( void );
 // Get size of buffer needed for QMUX + QMICTLSyncReq
 u16 QMICTLSyncReqSize( void );
 
+// Get size of buffer needed for QMUX + QMICTLGetVersionInfo
+u16 QMICTLGetVersionInfoReqSize( void );
+
 /*=========================================================================*/
 // Fill Buffers with QMI requests
 /*=========================================================================*/
@@ -383,6 +390,12 @@ int QMICTLSyncReq(
    u16  buffSize,
    u16  transactionID );
 
+// Fill buffer with QMI CTL Get version Info Request
+int QMICTLGetVersionInfoReq(
+   void *pBuffer,
+   u16  buffSize,
+   u16  transactionID );
+
 /*=========================================================================*/
 // Parse data from QMI responses
 /*=========================================================================*/
@@ -444,6 +457,13 @@ int QMICTLSetDataFormatResp(
 int QMICTLSyncResp(
    void *pBuffer,
    u16  buffSize );
+
+// Parse the QMI CTL Version Info Response
+int QMICTLGetVersionInfoResp(
+   void *pBuffer,
+   u16   buffSize,
+   u8 *  pSvcVersion,
+   int   versionInfoSize );
 
 // Get size of buffer needed for QMUX + QMICTLSetPowerSaveModeReq
 u16  QMICTLSetPowerSaveModeReqSize( void );
