@@ -842,7 +842,8 @@ int QMIWDASetDataFormatReq(
    void *   pBuffer,
    u16      buffSize,
    u16      transactionID,
-   bool     te_flow_control )
+   bool     te_flow_control,
+   int      iDataMode)
 {
    if (pBuffer == 0 || buffSize < QMIWDASetDataFormatReqSize(te_flow_control) )
    {
@@ -887,15 +888,18 @@ int QMIWDASetDataFormatReq(
    put_unaligned( cpu_to_le16(0x0004), (u16 *)(pBuffer + sizeof( sQMUX ) + 12));
 
    /* LinkProt: 0x1 - ETH; 0x2 - rawIP  4 bytes */
-#ifdef DATA_MODE_RP
-   /* Set RawIP mode */
-   put_unaligned( cpu_to_le32(0x00000002), (u32 *)(pBuffer + sizeof( sQMUX ) + 14));
-   DBG("Request RawIP Data Format\n");
-#else
-   /* Set Ethernet  mode */
-   put_unaligned( cpu_to_le32(0x00000001), (u32 *)(pBuffer + sizeof( sQMUX ) + 14));
-   DBG("Request Ethernet Data Format\n");
-#endif
+   if(iDataMode==eDataMode_RAWIP)
+   {
+      /* Set RawIP mode */
+      put_unaligned( cpu_to_le32(0x00000002), (u32 *)(pBuffer + sizeof( sQMUX ) + 14));
+      DBG("Request RawIP Data Format\n");
+   }
+   else
+   {
+      /* Set Ethernet  mode */
+      put_unaligned( cpu_to_le32(0x00000001), (u32 *)(pBuffer + sizeof( sQMUX ) + 14));
+      DBG("Request Ethernet Data Format\n");
+   }
 
    /* TLVType Uplink Data Aggression Protocol - 1 byte */
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 18) = 0x13;
@@ -908,14 +912,14 @@ int QMIWDASetDataFormatReq(
 
    if(te_flow_control)
    {
-      /* TLVType Flow Control - 1 byte */
-      *(u8 *)(pBuffer + sizeof( sQMUX ) + 25) = 0x1A;
+   /* TLVType Flow Control - 1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 25) = 0x1A;
 
-      /* TLVLength 2 bytes */
-      put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 26));
+   /* TLVLength 2 bytes */
+   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 26));
 
-      /* Flow Control: 0 - not done by TE; 1 - done by TE  1 byte */
-      *(u8 *)(pBuffer + sizeof( sQMUX ) + 28) = 1; /* flow control done by TE */
+   /* Flow Control: 0 - not done by TE; 1 - done by TE  1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 28) = 1; /* flow control done by TE */
    
    } /* TE_FLOW_CONTROL */
 
@@ -944,7 +948,8 @@ RETURN VALUE:
 int QMICTLSetDataFormatReq(
    void *   pBuffer,
    u16      buffSize,
-   u8       transactionID )
+   u8       transactionID ,
+   int      iDataMode)
 {
    if (pBuffer == 0 || buffSize < QMICTLSetDataFormatReqSize() )
    {
@@ -980,15 +985,18 @@ int QMICTLSetDataFormatReq(
     put_unaligned( cpu_to_le16(0x0002), (u16 *)(pBuffer + sizeof( sQMUX ) + 11));
 
    /* LinkProt: 0x1 - ETH; 0x2 - rawIP  2 bytes */
-#ifdef DATA_MODE_RP
-   /* Set RawIP mode */
-   put_unaligned( cpu_to_le16(0x0002), (u16 *)(pBuffer + sizeof( sQMUX ) + 13));
-   DBG("Request RawIP Data Format\n");
-#else
-   /* Set Ethernet  mode */
-   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 13));
-   DBG("Request Ethernet Data Format\n");
-#endif
+   if(iDataMode==eDataMode_RAWIP)
+   {
+      /* Set RawIP mode */
+      put_unaligned( cpu_to_le16(0x0002), (u16 *)(pBuffer + sizeof( sQMUX ) + 13));
+      DBG("Request RawIP Data Format\n");
+   }
+   else
+   {
+      /* Set Ethernet  mode */
+      put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 13));
+      DBG("Request Ethernet Data Format\n");
+   }
 
    /* success */
    return sizeof( sQMUX ) + 15;
@@ -1406,14 +1414,15 @@ DESCRIPTION:
 PARAMETERS
    pBuffer         [ I ] - Buffer to be parsed
    buffSize        [ I ] - Size of pBuffer
-
+   iDataMode       [ I ] - Data Mode
 RETURN VALUE:
    int - 0 for success
          Negative errno for error
 ===========================================================================*/
 int QMIWDASetDataFormatResp(
    void *   pBuffer,
-   u16      buffSize )
+   u16      buffSize,
+   int      iDataMode)
 {
 
    int result;
@@ -1457,21 +1466,24 @@ int QMIWDASetDataFormatResp(
       
    }
 
-#ifdef DATA_MODE_RP
-   if (pktLinkProtocol[0] != 2)
+   if(iDataMode==eDataMode_RAWIP)
    {
-      DBG("EFAULT: Data Format Cannot be set to RawIP Mode\n"); 
-      return -EFAULT;
+      if (pktLinkProtocol[0] != 2)
+      {
+         DBG("EFAULT: Data Format Cannot be set to RawIP Mode\n"); 
+         return -EFAULT;
+      }
+      DBG("Data Format Set to RawIP\n");
    }
-   DBG("Data Format Set to RawIP\n");
-#else
-   if (pktLinkProtocol[0] != 1)
+   else
    {
-      DBG("EFAULT: Data Format Cannot be set to Ethernet Mode\n"); 
-      return -EFAULT;
+      if (pktLinkProtocol[0] != 1)
+      {
+         DBG("EFAULT: Data Format Cannot be set to Ethernet Mode\n"); 
+         return -EFAULT;
+      }
+      DBG("Data Format Set to Ethernet Mode \n");
    }
-   DBG("Data Format Set to Ethernet Mode \n");
-#endif
 
    return 0;
 }
@@ -1486,14 +1498,15 @@ DESCRIPTION:
 PARAMETERS
    pBuffer         [ I ] - Buffer to be parsed
    buffSize        [ I ] - Size of pBuffer
-
+   iDataMode       [ I ] - Data Mode
 RETURN VALUE:
    int - 0 for success
          Negative errno for error
 ===========================================================================*/
 int QMICTLSetDataFormatResp(
    void *   pBuffer,
-   u16      buffSize )
+   u16      buffSize,
+   int      iDataMode)
 {
 
    int result;
@@ -1535,21 +1548,24 @@ int QMICTLSetDataFormatResp(
       return -EFAULT;
    }
 
-#ifdef DATA_MODE_RP
-   if (pktLinkProtocol[0] != 2)
+   if(iDataMode==eDataMode_RAWIP)
    {
-      DBG("EFAULT: Data Format Cannot be set to RawIP Mode\n"); 
-      return -EFAULT;
+      if (pktLinkProtocol[0] != 2)
+      {
+         DBG("EFAULT: Data Format Cannot be set to RawIP Mode\n"); 
+         return -EFAULT;
+      }
+      DBG("Data Format Set to RawIP\n");
    }
-   DBG("Data Format Set to RawIP\n");
-#else
-   if (pktLinkProtocol[0] != 1)
+   else
    {
-      DBG("EFAULT: Data Format Cannot be set to Ethernet Mode\n"); 
-      return -EFAULT;
+      if (pktLinkProtocol[0] != 1)
+      {
+         DBG("EFAULT: Data Format Cannot be set to Ethernet Mode\n"); 
+         return -EFAULT;
+      }
+      DBG("Data Format Set to Ethernet Mode \n");
    }
-   DBG("Data Format Set to Ethernet Mode \n");
-#endif
 
    return 0;
 }
@@ -1596,4 +1612,257 @@ int QMICTLSyncResp(
    result = ValidQMIMessage( pBuffer, buffSize );
 
    return result;
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLSetPowerSaveModeReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMICTLSetPowerSaveModeReq
+
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16 QMICTLSetPowerSaveModeReqSize( void )
+{
+   return sizeof( sQMUX ) + 13; 
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLSetPowerSaveModeReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI CTL Set Power Save Mode Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMICTLSetPowerSaveModeReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u8       transactionID,
+   u8       mode)
+{
+   if (pBuffer == 0 || buffSize < QMICTLSetPowerSaveModeReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   /* QMI CTL Set Power Save Mode Request */
+   /* Request */
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00; // QMICTL_FLAG_REQUEST
+   
+   /* Transaction ID 1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID; /* 1 byte as in spec */
+
+   /* Message ID  2 bytes */
+   put_unaligned( cpu_to_le16(0x002A), (u16 *)(pBuffer + sizeof( sQMUX ) + 2));
+
+   /* Length  2 bytes  of 1 TLV = 7 bytes */
+   put_unaligned( cpu_to_le16(0x0007), (u16 *)(pBuffer + sizeof( sQMUX ) + 4));
+    
+   /* TLVType Power save state 1 byte  */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) +  6) = 0x01;
+
+   /* TLVLength  2 bytes - see spec */
+   put_unaligned( cpu_to_le16(0x0004), (u16 *)(pBuffer + sizeof( sQMUX ) + 7)); 
+
+   /* pwrsave_state  4 byptes */
+   //*(u8 *)(pBuffer + sizeof( sQMUX ) + 9) = mode; 
+   
+   /* pwrsave_state  4 byptes */
+   put_unaligned( cpu_to_le32(mode), (u32 *)(pBuffer + sizeof( sQMUX ) + 9) );
+
+   /* success */
+   return sizeof( sQMUX ) + 13;
+
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLSetPowerSaveModeResp (Public Method)
+
+DESCRIPTION:
+   Parse the QMI CTL Set Power Save Mode Response
+
+PARAMETERS
+   pBuffer         [ I ] - Buffer to be parsed
+   buffSize        [ I ] - Size of pBuffer
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int QMICTLSetPowerSaveModeResp(
+   void *   pBuffer,
+   u16      buffSize )
+{
+   int result;
+   
+   // Ignore QMUX and SDU
+   //    QMI CTL SDU is 2 bytes, not 3
+   u8 offset = sizeof( sQMUX ) + 2;
+
+   if (pBuffer == 0 || buffSize < offset)
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+
+   result = GetQMIMessageID( pBuffer, buffSize );
+   if (result != 0x2A)
+   {
+      return -EFAULT;
+   }
+
+   /* Check response message result TLV */
+   result = ValidQMIMessage( pBuffer, buffSize );
+   if (result != 0)
+   {
+      DBG("EFAULT: Set Power Save Mode Bad Response\n"); 
+      return -EFAULT;
+   }
+   return 0;
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLConfigPowerSaveSettingsReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMICTLConfigPowerSaveSettingsReq
+
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16 QMICTLConfigPowerSaveSettingsReqSize( void )
+{
+   return sizeof( sQMUX ) + 19; 
+}
+
+
+/*===========================================================================
+METHOD:
+   QMICTLConfigPowerSaveSettingsReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI CTL Config Power Save Settings Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMICTLConfigPowerSaveSettingsReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u8       transactionID,
+   u8       service,
+   u8       indication)
+{
+   if (pBuffer == 0 || buffSize < QMICTLConfigPowerSaveSettingsReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   /* QMI CTL Set Power Save Mode Request */
+   /* Request */
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00; // QMICTL_FLAG_REQUEST
+   
+   /* Transaction ID 1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID; /* 1 byte as in spec */
+
+   /* Message ID  2 bytes */
+   put_unaligned( cpu_to_le16(0x0029), (u16 *)(pBuffer + sizeof( sQMUX ) + 2));
+
+   /* Length  2 bytes  of 2 TLVs = 13 bytes */
+   put_unaligned( cpu_to_le16(0x000D), (u16 *)(pBuffer + sizeof( sQMUX ) + 4));
+    
+   /* TLVType Power save state 1 byte  */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) +  6) = 0x01;
+
+   /* TLVLength  2 bytes - see spec */
+   put_unaligned( cpu_to_le16(0x0005), (u16 *)(pBuffer + sizeof( sQMUX ) + 7)); 
+
+   /* pwrsave_state  4 byptes */
+   put_unaligned( cpu_to_le32(0x00000001), (u32 *)(pBuffer + sizeof( sQMUX ) + 9) );
+   
+   /* qmi_service 1 byptes */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) +  13) = service;
+   
+   /* TLVType Permitted Indication set 1 byte  */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) +  14) = 0x11;
+   
+   /* TLVLength  2 bytes*/
+   put_unaligned( cpu_to_le16(0x0002), (u16 *)(pBuffer + sizeof( sQMUX ) + 15)); 
+
+   /* indication_set 2 bytes*/
+   put_unaligned( cpu_to_le16(indication), (u16 *)(pBuffer + sizeof( sQMUX ) + 17)); 
+
+   /* success */
+   return sizeof( sQMUX ) + 19;
+
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLConfigPowerSaveSettingsResp (Public Method)
+
+DESCRIPTION:
+   Parse the QMI CTL Config Power Save Settings Request
+
+PARAMETERS
+   pBuffer         [ I ] - Buffer to be parsed
+   buffSize        [ I ] - Size of pBuffer
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int QMICTLConfigPowerSaveSettingsResp(
+   void *   pBuffer,
+   u16      buffSize )
+{
+   int result;
+   
+   // Ignore QMUX and SDU
+   //    QMI CTL SDU is 2 bytes, not 3
+   u8 offset = sizeof( sQMUX ) + 2;
+
+   if (pBuffer == 0 || buffSize < offset)
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+
+   result = GetQMIMessageID( pBuffer, buffSize );
+   if (result != 0x29)
+   {
+      return -EFAULT;
+   }
+
+   /* Check response message result TLV */
+   result = ValidQMIMessage( pBuffer, buffSize );
+   if (result != 0)
+   {
+      DBG("EFAULT: Config Power Save Settings Request\n"); 
+      return -EFAULT;
+   }
+   return 0;
 }

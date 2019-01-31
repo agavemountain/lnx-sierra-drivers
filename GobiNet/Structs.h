@@ -354,6 +354,18 @@ typedef struct {
   u32 tx_overflows;
 } sNetStats;
 
+enum{
+   eDataMode_Unknown=-1,
+   eDataMode_Ethernet,
+   eDataMode_RAWIP,
+};
+
+enum{
+   eNetDeviceLink_Unknown=-1,
+   eNetDeviceLink_Disconnected,
+   eNetDeviceLink_Connected,
+};
+
 /*=========================================================================*/
 // Struct sGobiUSBNet
 //
@@ -437,6 +449,8 @@ typedef struct sGobiUSBNet
    struct device *qcqmidev;
    struct device *dev;
    u16 WDSClientID;
+   int iNetLinkStatus;
+   int iDataMode;
 } sGobiUSBNet;
 
 /*=========================================================================*/

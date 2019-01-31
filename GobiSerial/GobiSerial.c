@@ -79,6 +79,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/serial.h>
 
 /* Determine if we are in a particular kernel series */
 #define KERNEL_SERIES(x, y) \
@@ -89,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2016-09-28/SWI_2.26"
+#define DRIVER_VERSION "2017-01-04/SWI_2.27"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -307,6 +308,11 @@ struct sierra_port_private {
    unsigned long ulExpires;
 };
 
+int gobi_usb_serial_generic_resume(struct usb_interface *intf)
+{
+   struct usb_serial *serial = usb_get_intfdata(intf);
+   return usb_serial_generic_resume(serial);
+}
 
 /*=========================================================================*/
 // Struct usb_serial_driver
@@ -322,8 +328,8 @@ static struct usb_driver GobiDriver =
    .id_table   = GobiVIDPIDTable,
 #ifdef CONFIG_PM
    .suspend    = usb_serial_suspend,
-   .resume = usb_serial_generic_resume,
-   .reset_resume = usb_serial_generic_resume,
+   .resume = gobi_usb_serial_generic_resume,
+   .reset_resume = gobi_usb_serial_generic_resume,
    .supports_autosuspend = true,
 #else
    .suspend    = NULL,

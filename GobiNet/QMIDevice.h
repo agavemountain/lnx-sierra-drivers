@@ -129,6 +129,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 #define MAX_QCQMI 255
 #define SEMI_INIT_DEFAULT_VALUE 0
+#define QMI_CONTROL_MSG_DELAY_MS 100
 
 extern int qcqmi_table[MAX_QCQMI];
 
@@ -219,6 +220,13 @@ void WriteSyncCallback( struct urb * pWriteURB );
 
 // Start synchronous write
 int WriteSync(
+   sGobiUSBNet *    pDev,
+   char *             pInWriteBuffer,
+   int                size,
+   u16                clientID );
+
+// Start synchronous write without resume device
+int WriteSyncNoResume(
    sGobiUSBNet *    pDev,
    char *             pInWriteBuffer,
    int                size,
@@ -402,8 +410,18 @@ void wait_ms(unsigned int ms) ;
 int UserspaceRelease(struct inode *inode, struct file *file);
 
 // Userspace Lock (synchronous)
-int UserSpaceLock(struct file *filp, unsigned int cmd, struct file_lock *fl, struct file_lock *conf);
+int UserSpaceLock(struct file *filp, int cmd, struct file_lock *fl);
 
 // sync memory
 void gobi_flush_work(void);
 
+// Set modem in specific power save mode
+int SetPowerSaveMode(sGobiUSBNet *pDev,u8 mode);
+
+// Release Specific Client ID Nofitication From Memory List
+int ReleaseNotifyList(sGobiUSBNet *pDev,u16 clientID,u8 transactionID);
+// config modem qmi wakeup filter
+int ConfigPowerSaveSettings(sGobiUSBNet *pDev, u8 service, u8 indication);
+
+// Get TID
+u8 QMIXactionIDGet( sGobiUSBNet *pDev);
