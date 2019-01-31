@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2018-08-24/SWI_2.34"
+#define DRIVER_VERSION "2018-10-26/SWI_2.35"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -140,10 +140,11 @@ static int iusb3_zlp_enable = 1;
    { \
       printk( KERN_INFO "GobiSerial::%s " format, __FUNCTION__, ## arg ); \
    } \
-   
+
 struct gobi_serial_intf_private {
        spinlock_t susp_lock;
        unsigned int suspended:1;
+       struct sierra_port_private *pPortdata;
 };
 
 /*=========================================================================*/
@@ -504,6 +505,7 @@ static int Gobi_startup(struct usb_serial *serial)
 {
    struct usb_serial_port *port = NULL;
    struct sierra_port_private *portdata = NULL;
+   struct gobi_serial_intf_private *intfdata = NULL;
    int i;
 
    dev_dbg(&serial->dev->dev, "%s\n", __func__);
@@ -520,7 +522,16 @@ static int Gobi_startup(struct usb_serial *serial)
          return -ENOMEM;
       }
    }
-
+   intfdata = usb_get_serial_data(serial);
+   if(intfdata)
+   {
+      intfdata->pPortdata = portdata;
+   }
+   else
+   {
+      kfree(portdata);
+      return -ENOMEM;
+   }
    /* Now setup per port private data */
    for (i = 0; i < serial->num_ports; i++, portdata++) {
       struct sierra_port_private *privatedata;
@@ -533,6 +544,31 @@ static int Gobi_startup(struct usb_serial *serial)
       usb_set_serial_port_data(port, portdata);
    }
 
+   return 0;
+}
+
+int Gobi_portremove(struct usb_serial_port *port)
+{
+   
+   struct sierra_port_private *portdata = usb_get_serial_port_data(port);
+   struct gobi_serial_intf_private *intfdata = NULL;
+   u8 port_number;
+   usb_set_serial_port_data(port, NULL);
+   intfdata = usb_get_serial_data(port->serial);
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,11,0 ))
+   port_number = (u8)port->port_number;
+   #else
+   port_number = (u8)port->number;
+   #endif
+   if(port_number==0)
+   {
+      if(intfdata)
+      {
+         intfdata->pPortdata = NULL;
+      }
+      if(portdata)
+      kfree(portdata);
+   }
    return 0;
 }
 
@@ -610,7 +646,8 @@ static void Gobi_release(struct usb_serial *serial)
 {
    int i;
    struct usb_serial_port *port;
-   struct sierra_intf_private *intfdata = serial->private;
+   struct sierra_port_private *portdata;
+   struct gobi_serial_intf_private *intfdata = NULL;
    if(!serial)
       return ;
    if(!serial->dev)
@@ -621,8 +658,9 @@ static void Gobi_release(struct usb_serial *serial)
    {
       GobiUSBSendZeroConfigMsg(serial);
    }
+   intfdata = usb_get_serial_data(serial);
+   usb_set_serial_data(serial,NULL);
    stop_read_write_urbs(serial);
-
    if (serial->num_ports > 0) {
       port = serial->port[0];
       if (port)
@@ -633,7 +671,25 @@ static void Gobi_release(struct usb_serial *serial)
           * This address corresponds to the address of the chunk
           * that was given to port 0.
           */
-         kfree(usb_get_serial_port_data(port));
+         portdata = usb_get_serial_port_data(port);
+         usb_set_serial_port_data(port, NULL);
+         if(portdata)
+         {
+            intfdata->pPortdata = NULL;
+            kfree(portdata);
+         }
+         else
+         {
+            if(intfdata)
+            {
+               portdata = intfdata->pPortdata;
+               if(portdata)
+               {
+                  kfree(portdata);
+               }
+               intfdata->pPortdata = NULL;
+            }
+         }
       }
    }
 
@@ -645,7 +701,10 @@ static void Gobi_release(struct usb_serial *serial)
       }
       usb_set_serial_port_data(port, NULL);
    }
-   kfree(intfdata);
+   if(intfdata)
+   {
+      kfree(intfdata);
+   }
 }
 
 /*=========================================================================*/
@@ -678,6 +737,7 @@ static struct usb_serial_driver gGobiDevice =
    .read_bulk_callback  = GobiReadBulkCallback,
    .dtr_rts             = Gobi_dtr_rts,
    .attach              = Gobi_startup,
+   .port_remove         = Gobi_portremove,
    .release             = Gobi_release,
    .disconnect           = GobiUSBSerialDisconnect,
 #ifdef CONFIG_PM
@@ -781,11 +841,15 @@ static int GobiProbe(
       if (pSerial->interface->cur_altsetting->desc.bInterfaceClass != USB_CLASS_VENDOR_SPEC )
       {
          DBG( "Ignoring non vendor class interface #%d\n", nInterfaceNum );
+         usb_set_serial_data(pSerial, NULL);
+         kfree(intfdata);
          return -ENODEV;
       }
       else if (pID->driver_info &&
              test_bit(nInterfaceNum, &pID->driver_info)) {
          DBG( "Ignoring blacklisted interface #%d\n", nInterfaceNum );
+         usb_set_serial_data(pSerial, NULL);
+         kfree(intfdata);
          return -ENODEV;
       }
       else

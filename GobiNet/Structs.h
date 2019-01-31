@@ -121,6 +121,18 @@ POSSIBILITY OF SUCH DAMAGE.
 // Used in recursion, defined later below
 struct sGobiUSBNet;
 
+#define MAX_WQ_PROC_NAME_SIZE 512
+/*=========================================================================*/
+// Struct sGobiPrivateWorkQueues
+//
+//    Structure that defines an entry work queues per deivce
+/*=========================================================================*/
+typedef struct sGobiPrivateWorkQueues{
+   char szProcessName[MAX_WQ_PROC_NAME_SIZE];
+   struct workqueue_struct *wqprobe;
+   struct workqueue_struct *wqProcessReadCallback;
+}sGobiPrivateWorkQueues;
+
 /*=========================================================================*/
 // Struct sReadMemList
 //
@@ -540,11 +552,6 @@ typedef struct sGobiUSBNet
     */
    struct workqueue_struct *wqprobe;
    struct delayed_work dwprobe;
-   /*
-    * Workqueue and Delaywork to resubmit URB.
-    */
-   struct workqueue_struct *wq;
-   struct delayed_work dw;
    /*
     * Workqueue and Delaywork to Process Interrupt URB.
     */
