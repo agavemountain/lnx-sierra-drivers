@@ -229,12 +229,6 @@ const int i = 1;
                            : CDC_CONNSPD_MASK_LE; \
 }
 
-#define SET_CONTROL_LINE_STATE_REQUEST_TYPE \
-       (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE)
-#define SET_CONTROL_LINE_STATE_REQUEST             0x22
-#define CONTROL_DTR                     0x01
-#define CONTROL_RTS                     0x02
-
 /*=========================================================================*/
 // UserspaceQMIFops
 //    QMI device's userspace file operations
@@ -3240,35 +3234,36 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
 
    // Initiate QMI CTL Sync Procedure
    DBG( "Sending QMI CTL Sync Request\n" );
+
    result = QMICTLSyncProc(pDev);
    if (result != 0)
    {
-      DBG( "QMI CTL Sync Procedure Error\n" );
-      return result;
+         DBG( "QMI CTL Sync Procedure Error\n" );
+         return result;
    }
    else
    {
       DBG( "QMI CTL Sync Procedure Successful\n" );
    }
-
    // Setup Data Format
    if (is9x15)
    {
-       result = QMIWDASetDataFormat (pDev);
-       if((result != 0) && (iTEEnable==1))
+#ifdef TE_FLOW_CONTROL
+       result = QMIWDASetDataFormat (pDev, true);
+       if (result != 0) 
        {
-            iTEEnable = 0; //Disable TE
-            result = QMIWDASetDataFormat (pDev);
-       }
-
-       if(iTEEnable)
-       {
-           printk("TE Enabled\n");
+            result = QMIWDASetDataFormat (pDev, false);
+            printk(KERN_INFO "TE Flow Control disabled\n");
        }
        else
        {
-           printk("TE Disabled\n");
+          printk(KERN_INFO "TE Flow Control Enabled\n");
        }
+#else
+       result = QMIWDASetDataFormat (pDev, false);
+       printk("TE Flow Control Disabled\n");
+
+#endif
    }
    else
    {
@@ -3286,15 +3281,6 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    {
       return result;
    }
-
-#ifdef QOS_MODE
-   // Setup QOS callback
-   result = SetupQMIQOSCallback( pDev );
-   if (result != 0)
-   {
-      return result;
-   }
-#endif
 
    if (is9x15)
    {
@@ -3988,41 +3974,6 @@ int SetupQMIWDSCallback( sGobiUSBNet * pDev )
    return 0;
 }
 
-int SetupQMIQOSCallback( sGobiUSBNet * pDev )
-{
-   int result;
-   u16 QOSClientID;
-
-   if (IsDeviceValid( pDev ) == false)
-   {
-      DBG( "Invalid device\n" );
-      return -EFAULT;
-   }
-
-   result = GetClientID( pDev, QMIQOS );
-   if (result < 0)
-   {
-      return result;
-   }
-   QOSClientID = result;
-
-   //TODO QMI QOS Set Event Report
-
-   // Setup asnyc read callback
-   result = ReadAsync( pDev,
-                       QOSClientID,
-                       0,
-                       QMIQOSCallback,
-                       NULL );
-   if (result != 0)
-   {
-      DBG( "unable to setup async read\n" );
-      return result;
-   }
-
-   return 0;
-}
-
 /*===========================================================================
 METHOD:
    QMIDMSSWISetFCCAuth (Public Method)
@@ -4344,12 +4295,13 @@ DESCRIPTION:
    Release WDA client
 
 PARAMETERS:
-   pDev     [ I ] - Device specific memory
+   pDev            [ I ] - Device specific memory
+   te_flow_control [ I ] - TE Flow Control Flag
 
 RETURN VALUE:
    None
 ===========================================================================*/
-int QMIWDASetDataFormat( sGobiUSBNet * pDev )
+int QMIWDASetDataFormat( sGobiUSBNet * pDev, bool te_flow_control )
 {
    int result;
    void * pWriteBuffer;
@@ -4374,7 +4326,7 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev )
    WDAClientID = result;
 
    // QMI WDA Set Data Format Request
-   writeBufferSize = QMIWDASetDataFormatReqSize();
+   writeBufferSize = QMIWDASetDataFormatReqSize(te_flow_control);
    pWriteBuffer = kmalloc( writeBufferSize, GFP_KERNEL );
    if (pWriteBuffer == NULL)
    {
@@ -4383,7 +4335,8 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev )
 
    result = QMIWDASetDataFormatReq( pWriteBuffer,
                                     writeBufferSize,
-                                    1 );
+                                    1,
+                                    te_flow_control);
    if (result < 0)
    {
       kfree( pWriteBuffer );

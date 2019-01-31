@@ -118,12 +118,10 @@ if(qos_debug == 1)\
    printk( KERN_INFO "GobiNet[QoS]::%s " format, __FUNCTION__, ## arg );\
 }
 
-/* EXPERIMENTAL feature
- * The following definition is disabled (commented out) by default.
- * When uncommented it enables configuring tx packet to QOS flow
- * TODO packet filtering base on TFT indication
+/*
+ * enable/disable TE flow control
  */
-/*#define QOS_MODE*/
+#define TE_FLOW_CONTROL
 
 /* The following definition is disabled (commented out) by default.
  * When uncommented it enables raw IP data format mode of operation */
@@ -168,6 +166,20 @@ if(qos_debug == 1)\
 #define RX_MAX_QUEUE_MEMORY (60 * 1518)
 #define TX_QLEN(dev) (((dev)->udev->speed == USB_SPEED_HIGH) ? \
         (RX_MAX_QUEUE_MEMORY/(dev)->hard_mtu) : 4)
+
+#define SET_CONTROL_LINE_STATE_REQUEST_TYPE \
+       (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE)
+#define SET_CONTROL_LINE_STATE_REQUEST             0x22
+#define CONTROL_DTR                     0x01
+#define CONTROL_RTS                     0x02
+
+
+/* The following definition is disabled (commented out) by default.
+ * When uncommented it enables a feature that provides 'feedback' to an 
+ * application about allocated and freed resources on transmit path  provided
+ * CONFIG_PM is enabled in the kernel*/
+/*#define TX_URB_MONITOR*/
+
 /*=========================================================================*/
 // Struct sQMUX
 //
@@ -266,7 +278,7 @@ u16 QMIDMSGetMEIDReqSize( void );
 u16 QMIDMSSWISetFCCAuthReqSize( void );
 
 // Get size of buffer needed for QMUX + QMIWDASetDataFormatReq
-u16 QMIWDASetDataFormatReqSize( void );
+u16 QMIWDASetDataFormatReqSize( bool te_flow_control );
 
 // Get size of buffer needed for QMUX + QMICTLSetDataFormatReq
 u16  QMICTLSetDataFormatReqSize( void );
@@ -326,7 +338,8 @@ int QMIDMSSWISetFCCAuthReq(
 int QMIWDASetDataFormatReq(
    void *   pBuffer,
    u16      buffSize,
-   u16      transactionID );
+   u16      transactionID,
+   bool     te_flow_control );
 
 // Fill buffer with QMI CTL Set Data Format Request
 int QMICTLSetDataFormatReq(
@@ -396,8 +409,5 @@ int QMICTLSetDataFormatResp(
 int QMICTLSyncResp(
    void *pBuffer,
    u16  buffSize );
-
-//TE Enable
-extern int iTEEnable;
 
 
