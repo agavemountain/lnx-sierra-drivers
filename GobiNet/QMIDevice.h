@@ -129,17 +129,25 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "QMI.h"
 
 #define MAX_QCQMI 255
+#define MAX_QCQMI_PER_INTF 2
 #define SEMI_INIT_DEFAULT_VALUE 0
 #define QMI_CONTROL_MSG_DELAY_MS 100
+#define QMI_CONTROL_MAX_MSG_DELAY_MS QMI_CONTROL_MSG_DELAY_MS * 5
 
 extern int qcqmi_table[MAX_QCQMI];
 extern int qmux_table[MAX_QCQMI];
-
+extern sGobiPrivateWorkQueues GobiPrivateWorkQueues[MAX_QCQMI][MAX_QCQMI_PER_INTF];
 //Register State
 enum {
    eClearCID=0,
    eClearAndReleaseCID=1,
    eForceClearAndReleaseCID=2,
+};
+
+//Work queue type
+enum {
+   eWQ_PROBE=0,
+   eWQ_URBCB=1,
 };
 
 /*=========================================================================*/
@@ -471,6 +479,8 @@ int Gobi_usb_control_msg(struct usb_interface *intf, struct usb_device *dev, uns
                       __u16 size, int timeout);
 
 int AddClientToMemoryList(sGobiUSBNet *pDev,u16 clientID);
+//Wait control message semaphore to be up with timeout
+void wait_control_msg_semaphore_timeout(struct semaphore *pSem, unsigned int timeout);
 
 static inline int IsInterfacefDisconnected(struct usb_interface *intf)
 {
@@ -530,4 +540,6 @@ int iRemoveQMAPPaddingBytes(struct sk_buff *skb);
 int GobiInitWorkQueue(sGobiUSBNet *pGobiDev);
 // Destory WorkQueues
 void GobiDestoryWorkQueue(sGobiUSBNet *pGobiDev);
+// Clean up work queues in sGobiPrivateWorkQueues
+int iClearWorkQueuesByTableIndex(int index);
 

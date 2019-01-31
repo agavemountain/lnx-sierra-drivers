@@ -137,7 +137,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2018-08-24/SWI_2.53"
+#define DRIVER_VERSION "2018-10-26/SWI_2.54"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -3025,6 +3025,7 @@ bool isModuleUnload(sGobiUSBNet *    pDev)
 static int __init GobiUSBNetModInit( void )
 {
    int i;
+   int j;
    iModuleExit = 0;
    gpClass = class_create( THIS_MODULE, "GobiQMI" );
    if (IS_ERR( gpClass ) == true)
@@ -3042,8 +3043,12 @@ static int __init GobiUSBNetModInit( void )
 
    for(i=0;i<MAX_QCQMI;i++)
    {
-       qcqmi_table[i] = 0;
-       qmux_table[i] = 0;
+      qcqmi_table[i] = 0;
+      qmux_table[i] = 0;
+      for(j=0;j<MAX_QCQMI_PER_INTF;j++)
+      {
+         memset(&GobiPrivateWorkQueues[i][j],0,sizeof(sGobiPrivateWorkQueues));
+      }
    }
    #if _PROBE_LOCK_
    sema_init( &taskLoading, SEMI_INIT_DEFAULT_VALUE );
@@ -3066,9 +3071,13 @@ RETURN VALUE:
 ===========================================================================*/
 static void __exit GobiUSBNetModExit( void )
 {
+   int index = 0;
    iModuleExit = 1;
    usb_deregister( &GobiNet );
-
+   for(index=0;index<MAX_QCQMI;index++)
+   {
+      iClearWorkQueuesByTableIndex(index);
+   }
    class_destroy( gpClass );
 }
 
@@ -3302,7 +3311,7 @@ int GobiUSBLockReset( struct usb_interface * pIntf )
    ret = usb_lock_device_for_reset(udev, NULL);
    if (ret < 0) 
    {
-      printk(KERN_ERR "Reset Device\n");
+      printk(KERN_ERR "Err Reset Device\n");
       return -1;
    }
    printk(KERN_INFO "Reset Device\n");
