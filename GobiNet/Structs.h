@@ -363,6 +363,41 @@ typedef struct {
   u32 tx_overflows;
 } sNetStats;
 
+typedef struct {
+    u8 instance;
+    unsigned int ipAddress;
+} sQMuxIPTable;
+
+typedef struct gobi_qmimux_hdr{
+   u8 pad;
+   u8 mux_id;
+   __be16 pkt_len;
+}gobi_qmimux_hdr;
+
+typedef struct qmap_ipv4_header
+{
+#ifdef LITTLE_ENDIAN
+   unsigned char ihl:4;
+   unsigned char version:4;
+   unsigned char ecn:2;
+   unsigned char dscp:6;
+#else
+   unsigned char version:4;
+   unsigned char ihl:4;
+   unsigned char dscp:6;
+   unsigned char ecn:2;
+#endif
+   unsigned short total_length;
+   unsigned short identification;
+   unsigned short fragment_offset;
+   unsigned char ttl;
+   unsigned char protocol;
+   unsigned short header_checksum;
+   unsigned int src_address;
+   unsigned int dst_address;
+} __attribute__ ((aligned (1))) *qmap_ipv4_header_t;
+
+
 enum{
    eDataMode_Unknown=-1,
    eDataMode_Ethernet,
@@ -468,6 +503,7 @@ typedef struct sGobiUSBNet
    int nRmnet;
    int iMaxMuxID;
    struct net_device *pNetDevice[MAX_MUX_NUMBER_SUPPORTED];
+   sQMuxIPTable      qMuxIPTable[MAX_MUX_NUMBER_SUPPORTED];
 } sGobiUSBNet;
 
 /*=========================================================================*/

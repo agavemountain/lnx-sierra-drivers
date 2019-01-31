@@ -466,6 +466,8 @@ int QMIWDASetDataFormatReqSettingsReq(
       u16      buffSize,
       u16      transactionID );
 
+void PrintIPAddr(char *msg, unsigned int addr);
+
 enum{
    eSKIP_TE_FLOW_CONTROL_TLV=-1,
    eTE_FLOW_CONTROL_TLV_0=0,
