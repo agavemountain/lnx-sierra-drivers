@@ -107,7 +107,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2015-04-02/SWI_2.31"
+#define DRIVER_VERSION "2015-07-06/SWI_2.33"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -463,7 +463,12 @@ static void GobiNetDriverUnbind(
 {
    sGobiUSBNet * pGobiDev = (sGobiUSBNet *)pDev->data[0];
 
+   if(pGobiDev == NULL)
+   {
+       return ;
+   }
    // Should already be down, but just in case...
+   netif_stop_queue(pDev->net);
    netif_carrier_off( pDev->net );
 
    DeregisterQMIDevice( pGobiDev );
@@ -690,7 +695,13 @@ static int GobiNetDriverRxFixup(
 
     /* Copy data with offset equal to Ethernet header length */
     memcpy((pSKB->data + ETH_HLEN), pTempbuffer, pSKB->len);
+
+    /* the len & tail pointers must be update
+     * or optlen calculation in ipv6 ndisc_router_discovery will failed
+     */
     pSKB->len = pSKB->len + ETH_HLEN;
+    pSKB->tail = pSKB->tail + ETH_HLEN;
+
     /* Free the internal buffer; not needed */
     kfree(pTempbuffer);
 
@@ -1604,6 +1615,53 @@ static const struct usb_device_id GobiVIDPIDTable [] =
 };
 
 MODULE_DEVICE_TABLE( usb, GobiVIDPIDTable );
+/*===========================================================================
+METHOD:
+   PrintCurrentUSBSpeed (Public Method)
+
+DESCRIPTION:
+   Print Current USB Speed
+
+PARAMETERS
+   pDev        [ I ] - Pointer to usbnet
+
+RETURN VALUE:
+    NULL
+===========================================================================*/
+
+void PrintCurrentUSBSpeed(struct usbnet * pDev)
+{
+    enum usb_device_speed {
+         USB_SPEED_UNKNOWN = 0,                  /* enumerating */
+         USB_SPEED_LOW, USB_SPEED_FULL,          /* usb 1.1 */
+         USB_SPEED_HIGH,                         /* usb 2.0 */
+         USB_SPEED_WIRELESS,                     /* wireless (usb 2.5) */
+         USB_SPEED_SUPER,                        /* usb 3.0 */
+    };
+   switch(pDev->udev->speed)
+    {
+        case USB_SPEED_LOW:
+            printk("USB Speed : USB 1.0 SPEED LOW\n");
+            break;
+        case USB_SPEED_FULL:
+            printk("USB Speed : USB 1.0 SPEED FULL\n");
+            break;
+        case USB_SPEED_HIGH:
+            printk("USB Speed : USB 2.0\n");
+            break;
+        case USB_SPEED_WIRELESS:
+            printk("USB Speed : USB 2.5\n");
+            break;
+        case USB_SPEED_SUPER:
+            printk("USB Speed : USB 3.0\n");
+            break;
+        case USB_SPEED_UNKNOWN:
+        default:
+            printk("USB Speed : USB SPEED UNKNOWN\n");
+            break;
+    }
+}
+
 
 /*===========================================================================
 METHOD:
@@ -1807,7 +1865,7 @@ int GobiUSBNetProbe(
       usbnet_disconnect( pIntf );
       return status;
    }
-
+   PrintCurrentUSBSpeed(pDev);
    // Success
    return 0;
 }

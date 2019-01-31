@@ -225,7 +225,7 @@ int GetClientID(
    u8                   serviceType );
 
 // Release client and free memory
-void ReleaseClientID(
+bool ReleaseClientID(
    sGobiUSBNet *      pDev,
    u16                  clientID );
 

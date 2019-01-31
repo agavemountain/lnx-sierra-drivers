@@ -402,6 +402,7 @@ typedef struct sGobiUSBNet
    u16 writeTimeoutCnt;
 
    bool bLinkState;
+   u16 mtu;
 } sGobiUSBNet;
 
 /*=========================================================================*/
