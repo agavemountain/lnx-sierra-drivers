@@ -107,7 +107,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2015-01-23/SWI_2.29"
+#define DRIVER_VERSION "2015-03-09/SWI_2.30"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -1494,6 +1494,18 @@ fix_dest:
     return 1;
 }
 
+int GobiNetCheckConnect(struct usbnet *pDev) {
+    struct sGobiUSBNet * pGobiDev;
+    pGobiDev = (sGobiUSBNet *)pDev->data[0];
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,3,0 ))
+    netif_info(pDev, link, pDev->net,
+            "bLinkState %d\n", pGobiDev->bLinkState);
+#else
+    DBG("bLinkState %d\n", pGobiDev->bLinkState);
+#endif
+    return !pGobiDev->bLinkState;
+};
+
 /*=========================================================================*/
 // Struct driver_info
 /*=========================================================================*/
@@ -1513,6 +1525,7 @@ static const struct driver_info GobiNetInfo_qmi = {
 #else
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
+   .check_connect = GobiNetCheckConnect,
    .data          = BIT(8) | BIT(19) |
                      BIT(10), /* MDM9x15 PDNs */
 };
@@ -1532,6 +1545,7 @@ static const struct driver_info GobiNetInfo_gobi = {
 #else
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
+   .check_connect = GobiNetCheckConnect,
    .data          = BIT(0) | BIT(5),
 };
 
@@ -1550,8 +1564,10 @@ static const struct driver_info GobiNetInfo_9x15 = {
 #else
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
+   .check_connect = GobiNetCheckConnect,
    .data          = BIT(8) | BIT(10) | BIT(BIT_9X15),
 };
+
 
 #define QMI_G3K_DEVICE(vend, prod) \
    USB_DEVICE(vend, prod), \
@@ -1589,6 +1605,9 @@ static const struct usb_device_id GobiVIDPIDTable [] =
    {QMI_9X15_DEVICE(0x1199, 0x9055)},
    {QMI_9X15_DEVICE(0x1199, 0x9056)},
    {QMI_9X15_DEVICE(0x1199, 0x9061)},
+
+   //9x30
+   {QMI_9X15_DEVICE(0x1199, 0x9070)},
 
    //Terminating entry
    { }
@@ -1794,6 +1813,7 @@ int GobiUSBNetProbe(
    {
       // usbnet_disconnect() will call GobiNetDriverUnbind() which will call
       // DeregisterQMIDevice() to clean up any partially created QMI device
+      pGobiDev->mbQMIValid = false;
       usbnet_disconnect( pIntf );
       return status;
    }
@@ -1884,12 +1904,12 @@ MODULE_LICENSE( "Dual BSD/GPL" );
 #undef bool
 #endif
 
-module_param( debug, bool, S_IRUGO | S_IWUSR );
+module_param( debug, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( debug, "Debuging enabled or not" );
-module_param( qos_debug, bool, S_IRUGO | S_IWUSR );
+module_param( qos_debug, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( qos_debug, "QoS Debuging enabled or not" );
 
-module_param( interruptible, bool, S_IRUGO | S_IWUSR );
+module_param( interruptible, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( interruptible, "Listen for and return on user interrupt" );
 module_param( txQueueLength, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( txQueueLength, 

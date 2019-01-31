@@ -81,6 +81,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/kthread.h>
 #include <linux/poll.h>
 #include <linux/timer.h>
+#include <linux/proc_fs.h>
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,24 ))
    #include "usbnet.h"
@@ -305,6 +306,7 @@ typedef struct sQMIDev
 
    unsigned char              qcqmi;
 
+   struct proc_dir_entry *    proc_file;
 } sQMIDev;
 
 enum qos_flow_state {
@@ -398,6 +400,8 @@ typedef struct sGobiUSBNet
    struct timer_list read_tmr;
    u16 readTimeoutCnt;
    u16 writeTimeoutCnt;
+
+   bool bLinkState;
 } sGobiUSBNet;
 
 /*=========================================================================*/
