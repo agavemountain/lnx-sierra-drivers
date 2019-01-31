@@ -127,6 +127,9 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "Structs.h"
 #include "QMI.h"
 
+#define MAX_QCQMI 255
+extern int qcqmi_table[MAX_QCQMI];
+
 /*=========================================================================*/
 // Generic functions
 /*=========================================================================*/

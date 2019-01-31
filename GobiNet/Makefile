@@ -1,5 +1,6 @@
 obj-m := GobiNet.o
-GobiNet-objs := GobiUSBNet.o QMIDevice.o QMI.o
+GobiNet-objs := GobiUSBNet.o QMIDevice.o QMI.o usbnet_2_6_32.o usbnet_3_0_6.o \
+	            usbnet_2_6_35.o usbnet_3_10_21.o
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 OUTPUTDIR=/lib/modules/`uname -r`/kernel/drivers/net/usb/
@@ -8,6 +9,11 @@ OUTPUTDIR=/lib/modules/`uname -r`/kernel/drivers/net/usb/
 TX_URB_MONITOR := 0
 ifeq ($(TX_URB_MONITOR), 1)
 	ccflags-y:=-DTX_URB_MONITOR
+endif
+
+RAWIP := 0
+ifeq ($(RAWIP), 1)
+	ccflags-y:=-DDATA_MODE_RP
 endif
 
 PI_KDIR := ~/k/linux-rpi-3.6.y
@@ -22,7 +28,7 @@ MARVELL_CCPREFIX := ~/toolchain/qmi_mxwell/toolchain/bin/arm-none-linux-gnueabi-
 all:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
-marvell: 
+marvell:
 	$(MAKE) ARCH=arm CROSS_COMPILE=${MARVELL_CCPREFIX} -C $(MARVELL_KDIR) M=$(PWD) modules
 
 pi: 

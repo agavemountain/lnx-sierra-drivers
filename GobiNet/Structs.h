@@ -80,6 +80,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/cdev.h>
 #include <linux/kthread.h>
 #include <linux/poll.h>
+#include <linux/timer.h>
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,24 ))
    #include "usbnet.h"
@@ -302,6 +303,8 @@ typedef struct sQMIDev
    /* Transaction ID associated with QMICTL "client" */
    atomic_t                   mQMICTLTransactionID;
 
+   unsigned char              qcqmi;
+
 } sQMIDev;
 
 enum qos_flow_state {
@@ -324,6 +327,17 @@ typedef struct {
     u8 count;
     sMapping table[MAX_MAP];
 } sMappingTable;
+
+typedef struct {
+  u32 rx_packets;
+  u32 tx_packets;
+  u64 rx_bytes;
+  u64 tx_bytes;
+  u32 rx_errors;
+  u32 tx_errors;
+  u32 rx_overflows;
+  u32 tx_overflows;
+} sNetStats;
 
 /*=========================================================================*/
 // Struct sGobiUSBNet
@@ -372,6 +386,18 @@ typedef struct sGobiUSBNet
 
    sMappingTable maps;
 
+   /*
+    * Read write semaphore so that ReleaseClientID() waits until WriteSync() exits to handle 
+    * below limitation
+    * If a thread in your driver uses this call, make sure your disconnect()
+    * method can wait for it to complete.  Since you don't have a handle on the
+    * URB used, you can't cancel the request.
+    */
+   struct rw_semaphore shutdown_rwsem;
+
+   struct timer_list read_tmr;
+   u16 readTimeoutCnt;
+   u16 writeTimeoutCnt;
 } sGobiUSBNet;
 
 /*=========================================================================*/
