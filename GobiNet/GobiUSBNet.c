@@ -137,7 +137,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2018-10-26/SWI_2.54"
+#define DRIVER_VERSION "2018-12-21/SWI_2.55"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -149,6 +149,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 #define MAC48_MULTICAST_ID (0x33)
 #define GOBI_MAX_SINGLE_PACKET_SIZE 2048
 #define FIX_RX_BUFFER 1
+#define USB_CONF_ATTRIBUTE_REMOTE_WAKEUP_ENABLE 0x20
 
 // Debug flag
 int debug;
@@ -161,6 +162,8 @@ int iTEEnable=-1;
 int iQMAPEnable=-1;
 int iMaxQMUXSupported=-1;
 int iIPAlias=1;
+//Fill zero to ethernet header source address.
+int iEthSrcMACNonZero=0;
 /*
  * Is RAW IP RAW
  */
@@ -246,6 +249,7 @@ void gobi_netif_stop_queue(struct net_device *dev);
 void gobi_usbnet_stop(struct net_device *net);
 int gobi_rtnl_trylock(void);
 void stop_virtual_netdev(struct net_device *dev);
+int iIsRemoteWakeupSupport(struct usbnet * pDev);
 
 int CreateQMAPRxBuffer(sGobiUSBNet *pGobiDev)
 {
@@ -360,6 +364,10 @@ int work_function(void *data)
    
    #if _PROBE_LOCK_
    int i = 0;
+   if(!pGobiDev)
+   {
+      return -1;
+   }
    while(0!=down_trylock( &taskLoading ))
    {
      if((gobi_kthread_should_stop())||
@@ -397,6 +405,10 @@ int work_function(void *data)
    }
    set_current_state(TASK_RUNNING);
    #endif
+   if(!pGobiDev)
+   {
+      return -1;
+   }
    dev = interface_to_usbdev(pGobiDev->mUsb_Interface);
    snprintf(szQMIBusName,63,"qcqmi%d-%d-%s:%d.%d",   
       (int)pGobiDev->mQMIDev.qcqmi,   
@@ -656,16 +668,19 @@ int GobiNetSuspend(
    }
    #endif
    //USB/xhci: Enable remote wakeup for USB3 devices
-   nRet = Gobi_usb_control_msg(pIntf,pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
-                               USB_REQ_SET_FEATURE, USB_RECIP_DEVICE,
-                               USB_DEVICE_REMOTE_WAKEUP,
-                               0, //Don't care about which interface
-                               NULL,
-                               0,
-                               USB_CTRL_SET_TIMEOUT);
-   if (nRet != 0)
+   if(iIsRemoteWakeupSupport(pDev))
    {
-       DBG("[line:%d] send usb_control_msg failed!nRet = %d\n", __LINE__, nRet);
+      nRet = Gobi_usb_control_msg(pIntf,pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+                                  USB_REQ_SET_FEATURE, USB_RECIP_DEVICE,
+                                  USB_DEVICE_REMOTE_WAKEUP,
+                                  0, //Don't care about which interface
+                                  NULL,
+                                  0,
+                                  USB_CTRL_SET_TIMEOUT);
+      if (nRet != 0)
+      {
+          DBG("[line:%d] send usb_control_msg failed!nRet = %d\n", __LINE__, nRet);
+      }
    }
    // Run usbnet's suspend function so that the kernel spin lock counter keeps balance
    return usbnet_suspend( pIntf, powerEvent );
@@ -794,6 +809,15 @@ void UsbAutopmGetInterface(struct usb_interface * intf)
    gobi_usb_autopm_get_interface_async(intf);
    #else
    gobi_usb_autopm_get_interface_no_resume(intf); 
+   #endif
+}
+
+void UsbAutopmPutInterface(struct usb_interface * intf)
+{
+   #if (LINUX_VERSION_CODE < KERNEL_VERSION( 3,0,0 ))
+   gobi_usb_autopm_put_interface_async(intf);
+   #else
+   gobi_usb_autopm_put_interface_no_resume(intf); 
    #endif
 }
 
@@ -1046,7 +1070,7 @@ struct sk_buff *GobiNetDriverTxFixup(
    {
       DBG("Suspended\n");
       UsbAutopmGetInterface( pGobiDev->mpIntf );
-      gobi_usb_autopm_put_interface( pGobiDev->mpIntf );
+      UsbAutopmPutInterface( pGobiDev->mpIntf );
    }
    #else
    DBG( "\n" );
@@ -1338,7 +1362,7 @@ static int GobiNetDriverRxFixup(
    {
       DBG("Suspended\n");
       UsbAutopmGetInterface( pGobiDev->mpIntf );
-      gobi_usb_autopm_put_interface( pGobiDev->mpIntf );
+      UsbAutopmPutInterface( pGobiDev->mpIntf );
     }
     #endif
    if(pGobiDev->iQMUXEnable!=0)
@@ -1397,7 +1421,7 @@ static int GobiNetDriverRxFixup(
          {
             memcpy(pGobiDev->pLastSKB->data+offset,pSKB->data, pSKB->len);
             pGobiDev->pLastSKB->len = pGobiDev->pLastSKB->len + pSKB->len;
-            NETDBG("\nAppend length:%d/Last SKB Len:%d/Rx SKB Len%d\n",length,skb->len,pSKB->len);
+            NETDBG("\nAppend length:%d/Last SKB Len:%d/Rx SKB Len%d\n",length,pGobiDev->pLastSKB->len,pSKB->len);
             //NetHex (skb->data, skb->len);
             pGobiDev->iPacketInComplete = 1;
             pGobiDev->pLastSKB->dev = pDev->net;
@@ -2208,7 +2232,17 @@ void ResetEthHeader(struct usbnet *dev, struct sk_buff *skb, int isIpv4, int isQ
      }
      else
      {
-        memset(eth_hdr(skb)->h_source, 0, ETH_ALEN);
+        if(iEthSrcMACNonZero==0)
+        {
+           memset(eth_hdr(skb)->h_source, 0, ETH_ALEN);
+        }
+        else
+        {
+           //To workaround packet drop in bridge mode.
+           const unsigned char MacOctetXor = 0xC3;
+           memcpy(eth_hdr(skb)->h_source, dev->net->dev_addr, ETH_ALEN);
+           eth_hdr(skb)->h_source[ETH_ALEN - 1] ^= MacOctetXor;
+        }
         memcpy(eth_hdr(skb)->h_dest, dev->net->dev_addr, ETH_ALEN);
      }
      ip_type = isIpv4 == 1 ? ETH_P_IP : ETH_P_IPV6;
@@ -2318,7 +2352,7 @@ static int GobiNetDriverLteRxFixup(struct usbnet *dev, struct sk_buff *skb)
    {
       DBG("Suspended\n");
       UsbAutopmGetInterface( pGobiDev->mpIntf );
-      gobi_usb_autopm_put_interface( pGobiDev->mpIntf );
+      UsbAutopmPutInterface( pGobiDev->mpIntf );
    }
    #endif
    if(pGobiDev->iQMUXEnable!=0)
@@ -3140,18 +3174,21 @@ void SendWakeupControlMsg(
       }
    }
 #endif
-   //USB/xhci: Enable remote wakeup for USB3 devices
-   nRet = Gobi_usb_control_msg(pIntf,pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
-                                         USB_REQ_CLEAR_FEATURE,
-                                                 USB_RECIP_DEVICE,
-                                         USB_DEVICE_REMOTE_WAKEUP, 
-                                         0,//Don't care about which interface
-                                         NULL, 
-                                         0,
-                                         USB_CTRL_SET_TIMEOUT);
-   if (nRet != 0)
+   if( iIsRemoteWakeupSupport(pDev) )
    {
-       DBG("[line:%d] send usb_control_msg failed!nRet = %d\n", __LINE__, nRet);
+      //USB/xhci: Enable remote wakeup for USB3 devices
+      nRet = Gobi_usb_control_msg(pIntf,pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+                                            USB_REQ_CLEAR_FEATURE,
+                                                    USB_RECIP_DEVICE,
+                                            USB_DEVICE_REMOTE_WAKEUP, 
+                                            0,//Don't care about which interface
+                                            NULL, 
+                                            0,
+                                            USB_CTRL_SET_TIMEOUT);
+      if (nRet != 0)
+      {
+          DBG("[line:%d] send usb_control_msg failed!nRet = %d\n", __LINE__, nRet);
+      }
    }
    // 9x30(EM74xx) needs this when resume
    nRet = Gobi_usb_control_msg(pIntf, pDev->udev,
@@ -3470,6 +3507,37 @@ void stop_virtual_netdev(struct net_device *dev)
    rtnl_unlock();
 }
 
+/*===========================================================================
+METHOD:
+   iIsRemoteWakeupSupport (Private Method)
+
+DESCRIPTION:
+   Check device remote wakeup is supported.
+
+PARAMETERS
+   pDev          [ I ] - net device pointer
+
+RETURN VALUE:
+   int - 0 not supported.
+       - 1 supported.
+===========================================================================*/
+int iIsRemoteWakeupSupport(struct usbnet *pDev)
+{
+   if( (pDev) &&
+       (pDev->udev) && 
+       (pDev->udev->config))
+   {
+      if(USB_CONF_ATTRIBUTE_REMOTE_WAKEUP_ENABLE & 
+         pDev->udev->config->desc.bmAttributes)
+      {
+         DBG("Remote WakeUp Enable\n");
+         return 1;
+      }
+      
+   }
+   return 0;
+}
+
 module_exit( GobiUSBNetModExit );
 
 MODULE_VERSION( DRIVER_VERSION );
@@ -3504,4 +3572,7 @@ MODULE_PARM_DESC( iMaxQMUXSupported, "-1: Auto, Max QMUX instance support" );
 
 module_param( iIPAlias, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( iIPAlias, "0 = virtual adapter , 1 (default) = IP alias" );
+
+module_param( iEthSrcMACNonZero, int, S_IRUGO | S_IWUSR );
+MODULE_PARM_DESC( iEthSrcMACNonZero, "0(default) = Ethernet Header Source Address : Zeros , 1  = Ethernet Header Source Address: Non-zero" );
 

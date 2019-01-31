@@ -133,6 +133,9 @@ POSSIBILITY OF SUCH DAMAGE.
 #define SEMI_INIT_DEFAULT_VALUE 0
 #define QMI_CONTROL_MSG_DELAY_MS 100
 #define QMI_CONTROL_MAX_MSG_DELAY_MS QMI_CONTROL_MSG_DELAY_MS * 5
+// QMI CTL
+#define QMI_CTL_IND 0x02
+#define QMI_CTL_SYNC_IND 0x0027
 
 extern int qcqmi_table[MAX_QCQMI];
 extern int qmux_table[MAX_QCQMI];
@@ -163,6 +166,7 @@ bool bIsSuspend(sGobiUSBNet *pGobiDev);
 #endif
 
 void UsbAutopmGetInterface(struct usb_interface * intf);
+void UsbAutopmPutInterface(struct usb_interface * intf);
 
 // Print Hex data, for debug purposes
 void PrintHex(
@@ -503,6 +507,7 @@ static inline int gobi_usb_autopm_get_interface(struct usb_interface *intf)
 }
 void gobi_usb_autopm_put_interface(struct usb_interface *intf);
 void gobi_usb_autopm_get_interface_no_resume(struct usb_interface *intf);
+void gobi_usb_autopm_put_interface_no_resume(struct usb_interface *intf);
 int gobi_usb_autopm_get_interface_async(struct usb_interface *intf);
 void gobi_usb_autopm_put_interface_async(struct usb_interface *intf);
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
