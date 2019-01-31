@@ -426,11 +426,6 @@ int QMICTLSetDataFormat( sGobiUSBNet * pDev );
 // Initialize Read Sync tasks semaphore
 void InitSemID(sGobiUSBNet * pDev);
 
-//Release all Read Sync tasks semaphore(s)
-void StopSemID(sGobiUSBNet * pDev);
-
-//Query semaphore slot ID
-int iGetSemID(sGobiUSBNet *pDev,int line);
 
 /***************************************************************************/
 // wait_ms
@@ -460,6 +455,7 @@ u8 QMIXactionIDGet( sGobiUSBNet *pDev);
 // Release Specific Client ID Nofitication From Memory List
 int ReleaseNotifyList(sGobiUSBNet *pDev,u16 clientID,u8 transactionID);
 
+int gobi_kthread_should_stop(void);
 
 // 
 int Gobi_usb_control_msg(struct usb_device *dev, unsigned int pipe, __u8 request,
@@ -520,4 +516,9 @@ int iIsZeroQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset);
 //Check Command QMAP header in SKB.
 int iIsCMDQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset);
 
+
+// Init WorkQueues
+int GobiInitWorkQueue(sGobiUSBNet *pGobiDev);
+// Destory WorkQueues
+void GobiDestoryWorkQueue(sGobiUSBNet *pGobiDev);
 

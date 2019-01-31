@@ -82,6 +82,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/poll.h>
 #include <linux/timer.h>
 #include <linux/proc_fs.h>
+#include <linux/workqueue.h>
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,24 ))
    #include "usbnet.h"
@@ -529,6 +530,16 @@ typedef struct sGobiUSBNet
    u32 ULDatagramSize;
    u32 ULDatagram;
    int iIPAlias;
+   /*
+    * Workqueue and Delaywork to probe device.
+    */
+   struct workqueue_struct *wqprobe;
+   struct delayed_work dwprobe;
+   /*
+    * Workqueue and Delaywork to resubmit URB.
+    */
+   struct workqueue_struct *wq;
+   struct delayed_work dw;
 } sGobiUSBNet;
 
 /*=========================================================================*/

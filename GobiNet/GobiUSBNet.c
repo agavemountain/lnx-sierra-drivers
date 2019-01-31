@@ -137,7 +137,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-10-30/SWI_2.48"
+#define DRIVER_VERSION "2018-02-28/SWI_2.50"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -221,7 +221,6 @@ static struct class * gpClass;
 struct semaphore taskLoading;
 
 /**************************************************/
-void StopTask(sGobiUSBNet *pDev);
 bool isModuleUnload(sGobiUSBNet *pDev);
 int FixEthFrame(struct usbnet *dev, struct sk_buff *skb, int isIpv4);
 void ResetEthHeader(struct usbnet *dev, struct sk_buff *skb, int isIpv4, int isQMAPPacket);
@@ -337,139 +336,7 @@ void StopQMUXNet(sGobiUSBNet * pGobiDev)
    }
 }
 
-
-void ClearTaskID(bool bForceMode,sGobiUSBNet *pDev)
-{
-   int i=0;
-   int iTaskID = 0;
-   int isLocked = 0;
-   if(pDev==NULL)
-   {
-      DBG("%s : %d\n",__FUNCTION__,__LINE__);
-      return ;
-   }
-   iTaskID = pDev->iTaskID;
-   if(iTaskID==-1)
-   {
-      DBG("%s : %d\n",__FUNCTION__,__LINE__);
-      return ;
-   }
-
-   while(!down_trylock( &(pDev->taskIDSem) ))
-   {
-      i++;
-      if(i>MAX_RETRY_TASK_LOCK_TIME)
-      {
-         printk("ClearTaskID Get TaskID Timeout");
-         if(bForceMode)
-         {
-            if(pDev)
-               pDev->iTaskID=-1;
-            else
-            {
-               DBG("%s %d\n",__FUNCTION__,__LINE__);
-            }
-            return ;
-         }
-         else
-         {
-            isLocked = 1;
-            break;
-         }
-         
-      }
-      wait_ms(MAX_RETRY_TASK_MSLEEP_TIME);
-      if(signal_pending(current))
-      {
-        isLocked = 1;
-        break;
-      }
-      
-      if(pDev==NULL)
-      {
-         return;
-      }
-   }
-   set_current_state(TASK_RUNNING);
-   DBG("%s iTaskID(%d)\n",__FUNCTION__,iTaskID);
-   if(pDev)
-      pDev->iTaskID=-1;
-   if(pDev)
-   {
-      if(isLocked==0)
-      up(&(pDev->taskIDSem));
-   }
-}
-
-
-void StopTask(sGobiUSBNet *pDev)
-{
-   int i =0;
-   int isLocked = 0;
-   if(pDev==NULL)
-   {
-      return ;
-   }
-   while(!down_trylock( &(pDev->taskIDSem) ))
-   {
-      i++;
-      if(i>MAX_RETRY_TASK_LOCK_TIME)
-      {
-         DBG("StopTask Get TaskID Timeout");
-         isLocked = 1;
-         break;
-      }
-      set_current_state(TASK_INTERRUPTIBLE);
-      wait_ms(MAX_RETRY_TASK_MSLEEP_TIME);
-      if(signal_pending(current))
-      {
-         set_current_state(TASK_RUNNING);
-         return ;
-      }
-      if(pDev==NULL)
-      {
-         set_current_state(TASK_RUNNING);
-         return ;
-      }
-   }
-   set_current_state(TASK_RUNNING);
-   if(pDev==NULL)
-   {
-      return ;
-   }
-   else
-   {
-      if(pDev->iTaskID>0)
-      {
-         if(pDev)
-         {
-            if(pDev->task)
-               kthread_stop(pDev->task);
-         }
-         else
-         {
-            return ;
-         }
-         if(pDev)
-         {
-            pDev->task = NULL;
-            pDev->iTaskID = -1;
-         }
-         else
-         {
-            return ;
-         }
-      }
-   }
-   if(pDev)
-   {
-      if(isLocked == 0)
-     up(&pDev->taskIDSem);
-   }
-   return ;
-}
-
-int thread_function(void *data)
+int work_function(void *data)
 {
 
    int status=0;
@@ -481,7 +348,7 @@ int thread_function(void *data)
    int i = 0;
    while(0!=down_trylock( &taskLoading ))
    {
-     if((kthread_should_stop())||
+     if((gobi_kthread_should_stop())||
         signal_pending(current))
       {
          pGobiDev->task = NULL;
@@ -505,7 +372,7 @@ int thread_function(void *data)
       }
       wait_ms(10);
       
-      if((kthread_should_stop())||
+      if((gobi_kthread_should_stop())||
         signal_pending(current))
       {
          pGobiDev->task = NULL;
@@ -530,7 +397,6 @@ int thread_function(void *data)
    {
       if(pGobiDev)
       {
-        ClearTaskID(false,pGobiDev);
         if(pGobiDev)
         {
            DBG("Finish qcqmi(%s) task: %d %d\n",szQMIBusName,pGobiDev->iTaskID,status);
@@ -569,7 +435,6 @@ int thread_function(void *data)
    }
    if(pGobiDev)
    {
-      ClearTaskID(false,pGobiDev);
       if(pGobiDev)
       {
          DBG("Finish qcqmi(%s) task: %d %d\n",szQMIBusName,pGobiDev->iTaskID,status);
@@ -590,7 +455,7 @@ int thread_function(void *data)
          DBG("Device Disconnecting...\n");
          return 0;
       }
-      if((kthread_should_stop())||
+      if((gobi_kthread_should_stop())||
         signal_pending(current))
       {
          return 0;
@@ -606,8 +471,10 @@ int thread_function(void *data)
          {
             DBG( "Device usbnet_disconnect!\n" );
             usbnet_disconnect( pGobiDev->mUsb_Interface);
+            //workqueue should be canceled here.
             DBG( "Device usb_set_intfdata!\n" );
             usb_set_intfdata(pGobiDev->mUsb_Interface, NULL);
+            return 0;
          }
       }
       if(pGobiDev->mbUnload >= eStatUnloading)
@@ -615,7 +482,7 @@ int thread_function(void *data)
          DBG("Device Disconnecting...\n");
          return 0;
       }
-      if((kthread_should_stop())||
+      if((gobi_kthread_should_stop())||
         signal_pending(current))
       {
          return 0;
@@ -1107,7 +974,6 @@ static void GobiNetDriverUnbind(
    struct usb_interface *  pIntf)
 {
    sGobiUSBNet * pGobiDev = (sGobiUSBNet *)pDev->data[0];
-   int counter = 0;
    if(pGobiDev == NULL)
    {
        return ;
@@ -1121,45 +987,7 @@ static void GobiNetDriverUnbind(
    if (pDev->net->flags & IFF_UP)
    dev_deactivate(pDev->net);
    #endif
-   while(pGobiDev->iTaskID>=0)
-   {
-        DBG("GobiNetDriverUnbind Probe not finish\n");
-        pGobiDev->mbUnload = eStatUnloading;
-        set_current_state(TASK_INTERRUPTIBLE);
-        wait_ms(100);
-        if( signal_pending(current))
-        {
-            break;
-        }
-        if(counter++>10)
-            break;
-   }
-   set_current_state(TASK_RUNNING);
-   if(pGobiDev->iTaskID>=0)
-   {
-      char szQMIBusName[64]={0};
-      struct usb_device *dev = interface_to_usbdev(pGobiDev->mUsb_Interface);
-      snprintf(szQMIBusName,63,"qcqmi%d-%d-%s:%d.%d",
-      (int)pGobiDev->mQMIDev.qcqmi,   
-      dev->bus->busnum, dev->devpath,    
-      dev->actconfig->desc.bConfigurationValue,   
-      pGobiDev->mUsb_Interface->cur_altsetting->desc.bInterfaceNumber);
-      pGobiDev->mbUnload = eStatUnloading;
-      DBG("GobiNetDriverUnbind Probe not finish %s\n",szQMIBusName);
-      if(pGobiDev->iTaskID>=0)
-      {
-         if(pGobiDev->iTaskID>0)
-         {
-            StopTask(pGobiDev);
-            set_current_state(TASK_RUNNING);
-            wait_ms(500);
-            //gobi_flush_work();
-         }
-         pGobiDev->iTaskID = -1;
-      }
-      
-      
-   }
+
    DeregisterQMIDevice( pGobiDev );
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,29 ))
    kfree( pDev->net->netdev_ops );
@@ -2472,7 +2300,9 @@ static int GobiNetDriverLteRxFixup(struct usbnet *dev, struct sk_buff *skb)
    if(pGobiDev->iQMUXEnable!=0)
    {
       GobiNetDriverRxFixup(dev,skb);
-      return 1;
+      //Consume this packet in driver(netif_rx), no need to forward back
+      //via usbnet_skb_return after fixup
+      return 0;
    }
    else if(pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)
    {
@@ -2709,6 +2539,46 @@ void PrintCurrentUSBSpeed(struct usbnet * pDev)
 
 /*===========================================================================
 METHOD:
+   gobi_work_handler (Private Method)
+
+DESCRIPTION:
+   Start work function
+
+PARAMETERS
+   w        [ I ] - Pointer to work_struct
+
+RETURN VALUE:
+    NULL
+===========================================================================*/
+static void gobi_work_handler(struct work_struct *w)
+{
+   struct delayed_work *dwork;
+   sGobiUSBNet *pGobiDev = NULL;
+   dwork = to_delayed_work(w);
+   pGobiDev = container_of(dwork, sGobiUSBNet, dwprobe);
+   if(pGobiDev!=NULL)
+   {
+      struct usb_device *dev = NULL;
+      char szQMIBusName[64]={0};
+      dev = interface_to_usbdev(pGobiDev->mUsb_Interface);
+      if(dev!=NULL)
+      snprintf(szQMIBusName,63,"qcqmi%d-%d-%s:%d.%d",   
+         (int)pGobiDev->mQMIDev.qcqmi,   
+         dev->bus->busnum, dev->devpath,    
+         dev->actconfig->desc.bConfigurationValue,   
+         pGobiDev->mUsb_Interface->cur_altsetting->desc.bInterfaceNumber);
+      DBG("gobi_work_handler szQMIBusName:%s\n",szQMIBusName);
+      work_function((void *)pGobiDev);
+   }
+   else
+   {
+      DBG("pGobiDev NULL\n");
+   }
+
+}
+
+/*===========================================================================
+METHOD:
    GobiUSBNetProbe (Public Method)
 
 DESCRIPTION:
@@ -2770,12 +2640,13 @@ int GobiUSBNetProbe(
                printk( KERN_INFO "Only supported MUXID(MAX:%d):%d",MAX_MUX_NUMBER_SUPPORTED,iNumberOfMUXIDSupported);
                iNumberOfMUXIDSupported = iMaxQMUXSupported;
             }
-            if(iNumberOfMUXIDSupported<=0)
+            if ( iNumberOfMUXIDSupported <= 1 )
             {
                 printk( KERN_INFO "QMAP Disabled");
             }
             else
             {
+               // "at!netnum?" > 1
                DBG("QMAP Enabled, number of RMNET supported : %d\n", iNumberOfMUXIDSupported );
             }
          }
@@ -2963,7 +2834,7 @@ int GobiUSBNetProbe(
    pGobiDev->nRmnet = 0;
    if(ifacenum==8)// only allow interface 8 to allow qmux
    {
-      if((iQMAPEnable!=0)&&(iNumberOfMUXIDSupported>0)) 
+      if ( (iQMAPEnable != 0) && ( iNumberOfMUXIDSupported > 1 ) )
       {
          int index=0;
          pGobiDev->iQMUXEnable = 1;
@@ -3021,15 +2892,24 @@ int GobiUSBNetProbe(
    spin_lock_init(&(pGobiDev->urb_lock));
    spin_lock_init(&(pGobiDev->notif_lock));
    pGobiDev->task=NULL;
-   ClearTaskID(true,pGobiDev);
    pGobiDev->mIs9x15= is9x15;
    pGobiDev->mUsb_Interface = pIntf;
    pGobiDev->iTaskID = 0;
    if(pGobiDev->iTaskID>=0)
-   {
-      pGobiDev->task = kthread_run(&thread_function,(void *)pGobiDev,"GobiNetThread:%d Port:%d,Intf:%d",pGobiDev->iTaskID,
-         pDev->udev->portnum,pIntf->cur_altsetting->desc.bInterfaceNumber);
-      DBG(KERN_INFO"GobiNet Thread : %s %d:%d\n",pGobiDev->task->comm,pDev->udev->portnum,pIntf->cur_altsetting->desc.bInterfaceNumber);
+   {      
+      GobiInitWorkQueue(pGobiDev);
+      if(pGobiDev->wqprobe!=NULL)
+      {
+         unsigned long onesec =0;
+         onesec = msecs_to_jiffies(1000);
+         INIT_DELAYED_WORK(&pGobiDev->dwprobe,
+            gobi_work_handler);
+         queue_delayed_work(pGobiDev->wqprobe, &pGobiDev->dwprobe, onesec);
+      }
+      else
+      {
+         printk("GobiNet WorkQueue Fail\n");
+      }
    }
    else
    {

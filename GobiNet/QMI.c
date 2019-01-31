@@ -954,11 +954,6 @@ int QMIWDASetDataFormatReq(
    }
    uTotalTlvLength += 1+2+4;
    //End 0x13
-   // success
-   if(iqmuxenable==0)
-   {
-      return QMIWDASetDataFormatReqSize(te_flow_control,iqmuxenable);
-   }
 
    //Tlv 0x1A TE Flow Control
    if(te_flow_control!=eSKIP_TE_FLOW_CONTROL_TLV)
@@ -982,6 +977,11 @@ int QMIWDASetDataFormatReq(
       uTotalTlvLength += 1+2+1;
    } /* TE_FLOW_CONTROL */
    //End Tlv 0x1A
+   // success
+   if(iqmuxenable==0)
+   {
+      return QMIWDASetDataFormatReqSize(te_flow_control,iqmuxenable);
+   }
    //Tlv 0x12 Uplink Data Aggregation Protocol
    *(u8 *)(pBuffer + sizeof( sQMUX ) + iIndex)  = 0x12;
    iIndex++;

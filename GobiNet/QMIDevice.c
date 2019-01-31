@@ -117,6 +117,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 #include <asm/unaligned.h>
 #include "QMIDevice.h"
+#include "Structs.h"
 #include <linux/module.h>
 #include <linux/proc_fs.h> // for the proc filesystem
 #include <linux/device.h>
@@ -145,6 +146,7 @@ extern int debug;
 extern int is9x15;
 extern int interruptible;
 extern int iTEEnable;
+extern void *gobi_skb_push(struct sk_buff *pSKB, unsigned int len);
 const bool clientmemdebug = 0;
 enum {
  eNotifyListEmpty=-1,
@@ -164,7 +166,7 @@ enum {
 #define raw_spin_is_locked(x) (&(x)->raw_lock == 0)
 #endif
 #endif
-
+#define SDK_PROCESS_NAME "slqssdk"
 
 /* initially all zero */
 int qcqmi_table[MAX_QCQMI];
@@ -174,6 +176,8 @@ extern bool isModuleUnload(sGobiUSBNet *pDev);
 extern int iRAWIPEnable;
 extern int iQMUXEnable;
 static inline bool IsDeviceValid( sGobiUSBNet * pDev );
+static void gobiRunSubmitIntURB(sGobiUSBNet *pGobiDev,struct urb * pIntURB);
+static void SubmitIntURBWorkFunction(struct work_struct *w);
 
 #define CLIENT_READMEM_SNAPSHOT(clientID, pdev)\
    if( (debug & DEBUG_QMI) && clientmemdebug )\
@@ -230,6 +234,7 @@ void gobi_try_wake_up_process(struct task_struct * pTask);
 #define IOCTL_QMI_GET_QMAP_SUPPORT 0x8BE0 + 15
 #define IOCTL_QMI_SET_IP_ADDRESS   0x8BE0 + 16
 #define IOCTL_QMI_SET_IPV6_ADDRESS   0x8BE0 + 17
+#define IOCTL_QMI_GET_IPALIAS_MODE   0x8BE0 + 18
 
 // CDC GET_ENCAPSULATED_RESPONSE packet
 #define CDC_GET_ENCAPSULATED_RESPONSE_LE 0x01A1ll
@@ -346,22 +351,12 @@ static netdev_tx_t gobi_qmimux_start_xmit(struct sk_buff *skb, struct net_device
       NETDBG("Remove ETH Header\n");
       NetHex (skb->data, skb->len);
       skb_pull(skb,ETH_HLEN);
-      hdr = (struct gobi_qmimux_hdr *)skb_push(skb, sizeof(struct gobi_qmimux_hdr));
+      hdr = (struct gobi_qmimux_hdr *)gobi_skb_push(skb, sizeof(struct gobi_qmimux_hdr));
       len = skb->len - sizeof(struct gobi_qmimux_hdr);
    }
    else
    {
-      if ((skb->head +sizeof(struct gobi_qmimux_hdr)) > skb->data )
-      {
-         memmove(skb->data+sizeof(struct gobi_qmimux_hdr),skb->data, skb->len);
-         skb->len = skb->len + sizeof(struct gobi_qmimux_hdr);
-         skb->tail = skb->tail + sizeof(struct gobi_qmimux_hdr);
-         hdr = (struct gobi_qmimux_hdr *)skb;
-      }
-      else
-      {
-         hdr = (struct gobi_qmimux_hdr *)skb_push(skb, sizeof(struct gobi_qmimux_hdr));
-      }
+      hdr = (struct gobi_qmimux_hdr *)gobi_skb_push(skb, sizeof(struct gobi_qmimux_hdr));
    }
    hdr->pad = 0;
    hdr->mux_id = priv->mux_id;
@@ -857,7 +852,7 @@ int ResubmitIntURB(sGobiUSBNet * pDev, struct urb * pIntURB )
    interval = (pIntURB->dev->speed == USB_SPEED_HIGH) ?
                  6 : max((int)(pIntURB->ep->desc.bInterval), 3);
    mb();
-   spin_lock_irq(&(pDev->urb_lock));
+
    if (IsDeviceValid( pDev ) == false)
    {
       DBG( "Invalid device!\n" );
@@ -866,10 +861,10 @@ int ResubmitIntURB(sGobiUSBNet * pDev, struct urb * pIntURB )
    if(IsDeviceDisconnect(pDev))
    {
       DBG( "Disconnected!\n" );
-      spin_unlock_irq(&(pDev->urb_lock));
       usb_unlink_urb(pIntURB);
       return -EINVAL;
    }
+   spin_lock_irq(&(pDev->urb_lock));
    // Reschedule interrupt URB
    usb_fill_int_urb( pIntURB,
                      pIntURB->dev,
@@ -966,7 +961,7 @@ void ReadCallback( struct urb * pReadURB )
             usb_unlink_urb(pReadURB);
             return;
           }
-          ResubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
+          gobiRunSubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
           return;
       }
    }
@@ -985,7 +980,7 @@ void ReadCallback( struct urb * pReadURB )
          usb_unlink_urb(pReadURB);
          return;
       }
-      ResubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
+      gobiRunSubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
       return;
    }
 
@@ -1010,7 +1005,7 @@ void ReadCallback( struct urb * pReadURB )
          return;
       }
       // Resubmit the interrupt URB
-      ResubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
+      gobiRunSubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
 
       return;
    }
@@ -1034,7 +1029,7 @@ void ReadCallback( struct urb * pReadURB )
          return;
       }
       // Resubmit the interrupt URB
-      ResubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
+      gobiRunSubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
 
       return;
    }
@@ -1087,7 +1082,7 @@ void ReadCallback( struct urb * pReadURB )
                return;
             }
             // Resubmit the interrupt URB
-            ResubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
+            gobiRunSubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
 
             return;            
          }
@@ -1122,7 +1117,7 @@ void ReadCallback( struct urb * pReadURB )
             if(!IsDeviceDisconnect(pDev))
             {
                // Resubmit the interrupt URB
-               ResubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
+               gobiRunSubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
             }
             return;
          }
@@ -1215,7 +1210,7 @@ void ReadCallback( struct urb * pReadURB )
       return;
    }
    // Resubmit the interrupt URB
-   ResubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
+   gobiRunSubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
 }
 
 void read_tmr_cb( struct urb * pReadURB )
@@ -1325,7 +1320,7 @@ void IntCallback( struct urb * pIntURB )
                return;
             }
             // Resubmit the interrupt urb
-            ResubmitIntURB( pDev,pIntURB );
+            gobiRunSubmitIntURB( pDev,pIntURB );
             return;
          }
 
@@ -1372,7 +1367,7 @@ void IntCallback( struct urb * pIntURB )
       return;
    }
    // Resubmit the interrupt urb
-   ResubmitIntURB(pDev, pIntURB );
+   gobiRunSubmitIntURB(pDev,pIntURB);
 
    return;
 }
@@ -1612,126 +1607,10 @@ void InitSemID(sGobiUSBNet * pDev)
    }
    up(&(pDev->ReadsyncSem));
 }
-
-/*===========================================================================
-METHOD:
-   StopSemID (Public Method)
-
-DESCRIPTION:
-   Release all Read Sync tasks semaphore(s)
-
-PARAMETERS:
-   pDev     [ I ] - Device specific memory
-
-RETURN VALUE:
-   None
-===========================================================================*/
-void StopSemID(sGobiUSBNet *pDev)
+int gobi_kthread_should_stop(void)
 {
-   int i = 0;
-   if(pDev==NULL)
-   {
-      DBG("%s NULL\n",__FUNCTION__);
-      return ;
-   }
-   mb();
-   while(!down_trylock( &(pDev->ReadsyncSem) ))
-   {
-      mb();
-      if(pDev->iTaskID>0)
-      if(signal_pending(current))
-      {
-            return ;
-      }
-      i++;
-      if(i>MAX_RETRY_LOCK_NUMBER)
-      {
-         DBG("%s Get ReadSyncID Timeout\n",__FUNCTION__);
-         return ;
-      }
-
-      set_current_state(TASK_INTERRUPTIBLE);
-      wait_ms(MAX_RETRY_LOCK_MSLEEP_TIME);
-      if(signal_pending(current))
-      {
-         set_current_state(TASK_RUNNING);
-         return ;
-      }
-
-      if(pDev==NULL)
-      {
-         set_current_state(TASK_RUNNING);
-         return ;
-      }
-   }
-   set_current_state(TASK_RUNNING);
-   for(i=0;i<MAX_READ_SYNC_TASK_ID;i++)
-   {
-      if(pDev->iReasSyncTaskID[i]>0)
-      {
-         up(&(pDev->readSem[i]));
-         pDev->iReasSyncTaskID[i]=-__LINE__;
-      }
-   }
-   up(&(pDev->ReadsyncSem));
-   DBG("%s DONE\n",__FUNCTION__);
-}
-
-/*===========================================================================
-METHOD:
-   iGetSemID (Public Method)
-
-DESCRIPTION:
-   Get free read sync semaphore slot.
-
-PARAMETERS:
-   pDev     [ I ] - Device specific memory
-
-RETURN VALUE:
-   Free semaphore slot.
-===========================================================================*/
-int iGetSemID(sGobiUSBNet *pDev,int line)
-{
-   int i = 0;
-   int Ret = -1;
-   
-   mb();
-   while(!down_trylock( &(pDev->ReadsyncSem) ))
-   {
-      mb();
-      if(pDev->iTaskID>0)
-      if(kthread_should_stop() || signal_pending(current))
-      {
-            return -1;
-      }
-      i++;
-      if(i>MAX_RETRY_LOCK_NUMBER)
-      {
-         DBG("%s Get ReadSyncID Timeout\n",__FUNCTION__);
-         return -1;
-      }
-      set_current_state(TASK_INTERRUPTIBLE);
-      wait_ms(MAX_RETRY_LOCK_MSLEEP_TIME);
-      if(signal_pending(current))
-      {
-         set_current_state(TASK_RUNNING);
-         return -1;
-      }
-      
-   }
-   set_current_state(TASK_RUNNING);
-   for(i=0;i<MAX_READ_SYNC_TASK_ID;i++)
-   {
-      DBG("%s : iReasSyncTaskID[%d]:%d ret:%d\n",__FUNCTION__,i,pDev->iReasSyncTaskID[i],Ret);
-      if(pDev->iReasSyncTaskID[i]<0)
-      {
-         pDev->iReasSyncTaskID[i]=line;
-         Ret = i;
-         break;
-      }
-   }
-   up(&(pDev->ReadsyncSem));
-   return Ret;
+   //kthread_should_stop();
+   return 0;
 }
 
 /*=========================================================================*/
@@ -3922,6 +3801,26 @@ long UserspaceunlockedIOCTL(
             return map_mux_id_to_ipv4(pFilpData->mpDev, arg);
          case IOCTL_QMI_SET_IPV6_ADDRESS:
             return map_mux_id_to_ipv6(pFilpData->mpDev, arg);
+         case IOCTL_QMI_GET_IPALIAS_MODE:
+            {
+                sGobiUSBNet *pDev = pFilpData->mpDev;
+                result = -1;
+                if (arg == 0)
+                {
+                   DBG( "Bad GET IP ALIAS IOCTL buffer\n" );
+                   return -EINVAL;
+                }
+                if(pDev->iQMUXEnable)
+                {
+                    result = copy_to_user( (unsigned int *)arg, &pDev->iIPAlias, sizeof(pDev->iIPAlias));
+                    if (result != 0)
+                    {
+                       DBG( "Copy to userspace failure %d\n", result );
+                    }
+                    DBG( "iIPAlias:%d\n",(int)pDev->iIPAlias);
+                }
+                return result;
+            }
       default:
          return -EBADRQC;
    }
@@ -4098,19 +3997,11 @@ int UserspaceClose(
    pid_t pid = -1;
    int iTimeout = 0;
    int iFile_count = 0;
-   long refcnt = 0;
    mb();
    if(pFilp ==NULL)
    {
       printk( KERN_INFO "bad file data\n" );
       return -EBADF;
-   }
-
-   refcnt = atomic_long_read(&pFilp->f_count);
-   if (refcnt > 1)
-   {
-      DBG("f_count %ld - ignoring close\n", refcnt);
-      return 0;
    }
    
    pFilpData = (sQMIFilpStorage *)pFilp->private_data;
@@ -4496,7 +4387,7 @@ ssize_t UserspaceRead(
    }
    else
    {
-      PrintHex((char*)&pReadData,result);
+      PrintHex(&pReadData,result);
    }
    if(pFilp==NULL)
    {
@@ -5211,25 +5102,18 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    {
       // Set up for QMICTL
       //    (does not send QMI message, just sets up memory)
-      if(kthread_should_stop())
-      {
-         return -1;
-      }
-      if(signal_pending(current))
+      if(gobi_kthread_should_stop())
       {
          return -1;
       }
       
       result = GetClientID( pDev, QMICTL ,NULL);
 
-      if(kthread_should_stop())
+      if(gobi_kthread_should_stop())
       {
          return -1;
       }
-      if(signal_pending(current))
-      {
-         return -1;
-      }
+      
       if(pDev->mbUnload != eStatRegister)
       {
          return result;
@@ -5908,6 +5792,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
       RemoveProcessFile(pDev);
       RemoveCdev(pDev);
       KillRead( pDev );
+      GobiDestoryWorkQueue(pDev);
       flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
       // Timeout, remove the async read
       RemoveAndPopNotifyList(pDev,QMICTL,0,eClearCID);
@@ -5925,7 +5810,6 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
                              0,
                              100 );
       pDev->mbUnload = eStatUnloaded;
-      StopSemID(pDev);
       gobi_flush_work();
       return;
    }
@@ -5960,10 +5844,10 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    // Stop all reads
    KillRead( pDev );
    wait_interrupt();
+   GobiDestoryWorkQueue(pDev);   
    if(pDev->WDSClientID!=(u16)-1)
    ReleaseClientID( pDev, pDev->WDSClientID );
 
-   StopSemID(pDev);
    gobi_flush_work();
    wait_interrupt();
    // Release all clients
@@ -6205,18 +6089,12 @@ int QMIReady(
    // Send a write every 1000 ms and see if we get a response
    for (curTime = 0; curTime < timeout; curTime += 1000)
    {
-      if(kthread_should_stop())
+      if(gobi_kthread_should_stop())
       {
-         set_current_state(TASK_RUNNING);
          return -1;
       }
-      if(signal_pending(current))
-      {
-         set_current_state(TASK_RUNNING);
-         return -1;
-      }
+      
       // Start read
-      set_current_state(TASK_INTERRUPTIBLE);
       transactionID =QMIXactionIDGet(pDev);
       
       result = ReadAsync( pDev, QMICTL, transactionID, UpSem, &readSem ,1);
@@ -6247,15 +6125,7 @@ int QMIReady(
                  pWriteBuffer,
                  writeBufferSize,
                  QMICTL );
-      if(kthread_should_stop())
-      {
-         set_current_state(TASK_RUNNING);
-         flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
-         RemoveAndPopNotifyList(pDev,QMICTL,0,eClearCID);
-         LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
-         return -1;
-      }
-      if(signal_pending(current))
+      if(gobi_kthread_should_stop())
       {
          set_current_state(TASK_RUNNING);
          flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
@@ -6269,25 +6139,21 @@ int QMIReady(
          int iScaleCount = 0;
          for(iScaleCount=0;iScaleCount<100;iScaleCount++)
          {
-            if( (kthread_should_stop()) ||
-                signal_pending(current))
+            if( gobi_kthread_should_stop() )
             {
                if(pWriteBuffer)
                kfree(pWriteBuffer);
-               set_current_state(TASK_RUNNING);
                KillRead( pDev );
                flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
                RemoveAndPopNotifyList(pDev,QMICTL,0,eClearCID);
                LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
                return -1;
             }
-            wait_ms(10);//msleep( 10 );
-            if( (kthread_should_stop()) ||
-                signal_pending(current))
+            msleep( 10 );//wait_ms(10);//msleep( 10 );
+            if(gobi_kthread_should_stop())
             {
                if(pWriteBuffer)
                kfree(pWriteBuffer);
-               set_current_state(TASK_RUNNING);
                KillRead( pDev );
                flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
                RemoveAndPopNotifyList(pDev,QMICTL,0,eClearCID);
@@ -6298,7 +6164,6 @@ int QMIReady(
             {
                if(pWriteBuffer)
                kfree(pWriteBuffer);
-               set_current_state(TASK_RUNNING);
                KillRead( pDev );
                flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
                RemoveAndPopNotifyList(pDev,QMICTL,0,eClearCID);
@@ -6358,7 +6223,6 @@ int QMIReady(
    // Did we time out?
    if (curTime >= timeout)
    {
-      set_current_state(TASK_RUNNING);
       return false;
    }
    DBG( "QMI Ready after %u milliseconds\n", curTime );
@@ -6372,7 +6236,6 @@ int QMIReady(
    RemoveAndPopNotifyList(pDev,QMICTL,0,eClearCID);
    // End critical section
    LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
-   set_current_state(TASK_RUNNING);
    // Success
    return true;
 }
@@ -8669,3 +8532,149 @@ void ErrHex(
    return;
 }
 
+/*===========================================================================
+SubmitIntURBWorkFunction
+   SubmitIntURBWorkFunction (Private Method)
+
+DESCRIPTION:
+   resumbit interrupt URB workqueue
+
+PARAMETERS:
+   w                 [ I ] - Pointer to work_struct
+
+RETURN VALUE:
+   NULL
+===========================================================================*/
+static void SubmitIntURBWorkFunction(struct work_struct *w)
+{
+   struct delayed_work *dwork;
+   sGobiUSBNet *pGobiDev = NULL;
+   dwork = to_delayed_work(w);
+   pGobiDev = container_of(dwork, sGobiUSBNet, dw);
+   if(pGobiDev!=NULL)
+   {
+      DBG("ResubmitIntURB\n");
+      ResubmitIntURB(pGobiDev,pGobiDev->mQMIDev.mpIntURB);
+   }
+   else
+   {
+      DBG("pGobiDev NULL\n");
+   }
+}
+
+/*===========================================================================
+gobiRunSubmitIntURB
+   gobiRunSubmitIntURB (Private Method)
+
+DESCRIPTION:
+   Add resubmit URB work to workqueue. 
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to Device specific memory
+   pIntURB                  [ I ] - Pointer to Interrupt URB
+RETURN VALUE:
+   NULL
+===========================================================================*/
+static void gobiRunSubmitIntURB(sGobiUSBNet *pGobiDev,struct urb *pIntURB)
+{
+   //flush_workqueue(pGobiDev->wq);
+   INIT_DELAYED_WORK(&pGobiDev->dw,
+            SubmitIntURBWorkFunction);
+   queue_delayed_work(pGobiDev->wq, &pGobiDev->dw, 0);
+}
+
+/*===========================================================================
+GobiInitWorkQueue
+   GobiInitWorkQueue (Private Method)
+
+DESCRIPTION:
+   Init and Create workqueue in device specifc memory.
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to Device specific memory
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int GobiInitWorkQueue(sGobiUSBNet *pGobiDev)
+{
+   char szProcessName[64]={0};
+   struct usb_device *dev = NULL;
+   if(pGobiDev==NULL)
+      return -1;
+   dev = interface_to_usbdev(pGobiDev->mUsb_Interface);
+   snprintf(szProcessName,63,"gobi%d-%d-%s:%d.%d",   
+      (int)pGobiDev->mQMIDev.qcqmi,   
+      dev->bus->busnum, dev->devpath,    
+      dev->actconfig->desc.bConfigurationValue,   
+      pGobiDev->mUsb_Interface->cur_altsetting->desc.bInterfaceNumber);
+   if(pGobiDev->wq==NULL)
+   {
+      pGobiDev->wq = create_workqueue(szProcessName);
+      if (!pGobiDev->wq)
+      {
+        printk("Create Work Queue Failed\n");
+        return -1;
+      }
+   }
+   snprintf(szProcessName,63,"probe%d-%d-%s:%d.%d",   
+      (int)pGobiDev->mQMIDev.qcqmi,   
+      dev->bus->busnum, dev->devpath,    
+      dev->actconfig->desc.bConfigurationValue,   
+      pGobiDev->mUsb_Interface->cur_altsetting->desc.bInterfaceNumber);
+   if(pGobiDev->wqprobe==NULL)
+   {
+      pGobiDev->wqprobe = create_workqueue(szProcessName);
+      if (!pGobiDev->wqprobe)
+      {
+        printk("Create Work Queue Probe Failed\n");
+        return -1;
+      }
+   }
+   return 0;
+}
+
+/*===========================================================================
+GobiDestoryWorkQueue
+   GobiDestoryWorkQueue (Private Method)
+
+DESCRIPTION:
+   Destory workqueues in device specific memory. 
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to Device specific memory
+RETURN VALUE:
+   NULL
+===========================================================================*/
+void GobiDestoryWorkQueue(sGobiUSBNet *pGobiDev)
+{
+   char szProcessName[64]={0};
+   struct usb_device *dev = NULL;
+   if(pGobiDev==NULL)
+      return ;
+   dev = interface_to_usbdev(pGobiDev->mUsb_Interface);
+   snprintf(szProcessName,63,"%d-%d-%s:%d.%d",   
+      (int)pGobiDev->mQMIDev.qcqmi,   
+      dev->bus->busnum, dev->devpath,    
+      dev->actconfig->desc.bConfigurationValue,   
+      pGobiDev->mUsb_Interface->cur_altsetting->desc.bInterfaceNumber);
+   DBG("%s\n",szProcessName);
+   
+   if(pGobiDev->wqprobe!=NULL)
+   {
+      DBG("flush_workqueue probe\n");
+      flush_workqueue(pGobiDev->wqprobe);
+      DBG("destroy_workqueue probe\n");
+      destroy_workqueue(pGobiDev->wqprobe);
+      pGobiDev->wqprobe = NULL;
+   }
+   if(pGobiDev->wq!=NULL)
+   {
+      DBG("flush_workqueue urb");
+      flush_workqueue(pGobiDev->wq);
+      DBG("destroy_workqueue urb\n");
+      destroy_workqueue(pGobiDev->wq);
+      pGobiDev->wq = NULL;
+   }
+   
+}
