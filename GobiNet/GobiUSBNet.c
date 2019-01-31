@@ -127,7 +127,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-04-05/SWI_2.42"
+#define DRIVER_VERSION "2017-05-19/SWI_2.43"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -138,6 +138,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 #define IPV4HDR_TOT_LOWER (3)
 #define MAC48_MULTICAST_ID (0x33)
 #define GOBI_MAX_SINGLE_PACKET_SIZE 2048
+#define FIX_RX_BUFFER 1
 
 // Debug flag
 int debug;
@@ -213,6 +214,9 @@ int FixEthFrame(struct usbnet *dev, struct sk_buff *skb, int isIpv4);
 void ResetEthHeader(struct usbnet *dev, struct sk_buff *skb, int isIpv4);
 int GobiUSBNetOpen( struct net_device * pNet );
 int GobiUSBNetStop( struct net_device * pNet );
+#ifdef FIX_RX_BUFFER
+int GobiUSBNetChangeMTU(struct net_device *netdev, int new_mtu);
+#endif
 static int GobiNetDriverLteRxFixup(struct usbnet *dev, struct sk_buff *skb);
 void SendWeakupControlMsg(
    struct usb_interface * pIntf,
@@ -222,7 +226,7 @@ void ClearTaskID(bool bForceMode,sGobiUSBNet *pDev)
 {
    int i=0;
    int iTaskID = 0;
-
+   int isLocked = 0;
    if(pDev==NULL)
    {
       DBG("%s : %d\n",__FUNCTION__,__LINE__);
@@ -249,12 +253,19 @@ void ClearTaskID(bool bForceMode,sGobiUSBNet *pDev)
             {
                DBG("%s %d\n",__FUNCTION__,__LINE__);
             }
+            return ;
          }
-         return ;
+         else
+         {
+            isLocked = 1;
+            break;
+         }
+         
       }
       wait_ms(MAX_RETRY_TASK_MSLEEP_TIME);
       if(signal_pending(current))
       {
+        isLocked = 1;
         break;
       }
       
@@ -268,13 +279,17 @@ void ClearTaskID(bool bForceMode,sGobiUSBNet *pDev)
    if(pDev)
       pDev->iTaskID=-1;
    if(pDev)
+   {
+      if(isLocked==0)
       up(&(pDev->taskIDSem));
- }
+   }
+}
 
 
 void StopTask(sGobiUSBNet *pDev)
 {
    int i =0;
+   int isLocked = 0;
    if(pDev==NULL)
    {
       return ;
@@ -285,6 +300,7 @@ void StopTask(sGobiUSBNet *pDev)
       if(i>MAX_RETRY_TASK_LOCK_TIME)
       {
          DBG("StopTask Get TaskID Timeout");
+         isLocked = 1;
          break;
       }
       set_current_state(TASK_INTERRUPTIBLE);
@@ -330,7 +346,10 @@ void StopTask(sGobiUSBNet *pDev)
       }
    }
    if(pDev)
+   {
+      if(isLocked == 0)
      up(&pDev->taskIDSem);
+   }
    return ;
 }
 
@@ -416,7 +435,9 @@ int thread_function(void *data)
          /* recalculate buffers after changing hard_header_len */
          usbnet_change_mtu(pGobiDev->mpNetDev->net, pGobiDev->mpNetDev->net->mtu);
          pGobiDev->mpNetDev->rx_urb_size = GOBI_MAX_SINGLE_PACKET_SIZE;
+         #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,12,0 ))
          usbnet_update_max_qlen(pGobiDev->mpNetDev);
+         #endif
          #endif
       
          printk(KERN_INFO "RawIP mode\n" );
@@ -452,7 +473,18 @@ int thread_function(void *data)
       }
       if(pGobiDev)
       {
-         usbnet_disconnect( pGobiDev->mUsb_Interface);
+         if(IsDeviceDisconnect(pGobiDev))
+         {
+            DBG( "Device Disconnected!\n" );
+            return 0;
+         }
+         if(-ETIMEDOUT==status)
+         {
+            DBG( "Device usbnet_disconnect!\n" );
+            usbnet_disconnect( pGobiDev->mUsb_Interface);
+            DBG( "Device usb_set_intfdata!\n" );
+            usb_set_intfdata(pGobiDev->mUsb_Interface, NULL);
+         }
       }
       if(pGobiDev->mbUnload >= eStatUnloading)
       {
@@ -467,8 +499,9 @@ int thread_function(void *data)
       if(-ETIMEDOUT==status)
       {
          struct usb_device *udev;
-         udev = interface_to_usbdev(pGobiDev->mUsb_Interface);
          DBG("RESET USB DEVICE...\n");
+         udev = interface_to_usbdev(pGobiDev->mUsb_Interface);
+         if(pGobiDev->mUsb_Interface->cur_altsetting->desc.bInterfaceNumber ==8)
          usb_reset_device(udev);
       }
    }
@@ -526,7 +559,7 @@ int GobiNetSuspend(
    {
       return -ENOMEM;
    }
-
+   DBG("\n");
 #if (LINUX_VERSION_CODE > KERNEL_VERSION( 2,6,23 ))
    pDev = usb_get_intfdata( pIntf );
 #else
@@ -612,7 +645,7 @@ int GobiNetSuspend(
       This is required by modem on USB3.0 selective suspend */
    if ( pDev->udev->speed >= USB_SPEED_SUPER )
    {
-      nRet = usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+      nRet = Gobi_usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
                                USB_REQ_SET_FEATURE, USB_RECIP_INTERFACE,
                                USB_INTRF_FUNC_SUSPEND,
                                USB_INTRF_FUNC_SUSPEND_RW | USB_INTRF_FUNC_SUSPEND_LP |
@@ -625,7 +658,7 @@ int GobiNetSuspend(
    }
    #endif
    //USB/xhci: Enable remote wakeup for USB3 devices
-   nRet = usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+   nRet = Gobi_usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
                                USB_REQ_SET_FEATURE, USB_RECIP_DEVICE,
                                USB_DEVICE_REMOTE_WAKEUP,
                                0, //Don't care about which interface
@@ -660,7 +693,7 @@ int GobiNetResume( struct usb_interface * pIntf )
    sGobiUSBNet * pGobiDev;
    int nRet= 0;
    int oldPowerState;
-
+   DBG("\n");
    if (pIntf == 0)
    {
       return -ENOMEM;
@@ -739,6 +772,7 @@ void GobiNetReset(struct usb_interface * pIntf)
     }
     //DeregisterQMIDevice(pGobiDev);
     usbnet_disconnect(pIntf);
+    usb_set_intfdata(pIntf, NULL);
 }
 
 int GobiNetResetResume( struct usb_interface * pIntf )
@@ -904,6 +938,7 @@ static void GobiNetDriverUnbind(
    netif_stop_queue(pDev->net);
    netif_carrier_off( pDev->net );
    #if LINUX_VERSION_CODE >= KERNEL_VERSION( 3,0,0 )
+   if (pDev->net->flags & IFF_UP)
    dev_deactivate(pDev->net);
    #endif
    while(pGobiDev->iTaskID>=0)
@@ -1626,6 +1661,28 @@ int GobiUSBNetStartXmit(
 }
 #endif /* CONFIG_PM */
 
+
+#ifdef FIX_RX_BUFFER
+int GobiUSBNetChangeMTU(struct net_device *net, int new_mtu)
+{
+   struct usbnet   *dev = netdev_priv(net);
+   int             ll_mtu = new_mtu + net->hard_header_len;
+
+   // no second zero-length packet read wanted after mtu-sized packets
+   if ((ll_mtu % dev->maxpacket) == 0)
+      return -EDOM;
+   net->mtu = new_mtu;
+   DBG("old_hard_mtu = %d old_rx_urb_size = %zd\n", dev->hard_mtu, dev->rx_urb_size);
+   dev->hard_mtu = net->mtu + net->hard_header_len;
+     DBG("hard_mtu = %d new mtu = %d, hard_header_len = %d\n", dev->hard_mtu, net->mtu, net->hard_header_len);
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,12,0 ))
+   /* max qlen depend on hard_mtu and rx_urb_size */
+   usbnet_update_max_qlen(dev);
+   #endif
+   return 0;
+}
+#endif
+
 /*===========================================================================
 METHOD:
    GobiUSBNetOpen (Public Method)
@@ -2214,6 +2271,7 @@ int GobiUSBNetProbe(
    {
       DBG( "failed to get netdevice\n" );
       usbnet_disconnect( pIntf );
+      usb_set_intfdata(pIntf, NULL);
       return -ENXIO;
    }
 
@@ -2222,9 +2280,11 @@ int GobiUSBNetProbe(
    {
       DBG( "falied to allocate device buffers" );
       usbnet_disconnect( pIntf );
+      usb_set_intfdata(pIntf, NULL);
       return -ENOMEM;
    }
-
+   atomic_set( &pGobiDev->mAutoPM.mURBListLen, 0 );
+   pGobiDev->tx_qlen  = 0;
    pGobiDev->WDSClientID = (u16)-1;
    pGobiDev->iDataMode = eDataMode_Ethernet;
    pDev->data[0] = (unsigned long)pGobiDev;
@@ -2250,12 +2310,17 @@ int GobiUSBNetProbe(
    {
       DBG( "falied to allocate net device ops" );
       usbnet_disconnect( pIntf );
+      usb_set_intfdata(pIntf, NULL);
       return -ENOMEM;
    }
    memcpy( pNetDevOps, pDev->net->netdev_ops, sizeof( struct net_device_ops ) );
+   pDev->net->hard_header_len = 0;
 
    pGobiDev->mpUSBNetOpen = pNetDevOps->ndo_open;
    pNetDevOps->ndo_open = GobiUSBNetOpen;
+#ifdef FIX_RX_BUFFER
+   pNetDevOps->ndo_change_mtu = GobiUSBNetChangeMTU;
+#endif
    pGobiDev->mpUSBNetStop = pNetDevOps->ndo_stop;
    pNetDevOps->ndo_stop = GobiUSBNetStop;
 #ifdef TX_XMIT_SIERRA
@@ -2352,6 +2417,9 @@ int GobiUSBNetProbe(
        is9x15 = 1;
    }
    sema_init( &(pGobiDev->taskIDSem), SEMI_INIT_DEFAULT_VALUE );
+
+   mutex_init(&(pGobiDev->urb_lock));
+   mutex_init(&(pGobiDev->notif_lock));
    pGobiDev->task=NULL;
    ClearTaskID(true,pGobiDev);
    pGobiDev->mIs9x15= is9x15;
@@ -2399,7 +2467,9 @@ void GobiUSBDisconnect(struct usb_interface *pIntf)
        }
        pGobiDev->mbUnload = eStatUnloading;
    }
+   usbnet_stop(pDev->net);//IPV6 lock error
    usbnet_disconnect(pIntf);
+   usb_set_intfdata(pIntf, NULL);
 }
 
 static struct usb_driver GobiNet =
@@ -2539,7 +2609,7 @@ void SendWeakupControlMsg(
    #if defined(USB_INTRF_FUNC_SUSPEND) && defined(USB_INTRF_FUNC_SUSPEND_RW)
    if ( pDev->udev->speed >= USB_SPEED_SUPER )
    {
-      nRet = usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+      nRet = Gobi_usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
                                USB_REQ_SET_FEATURE, USB_RECIP_INTERFACE,
                                USB_INTRF_FUNC_SUSPEND,
                                pIntf->cur_altsetting->desc.bInterfaceNumber, /* two bytes in this field, suspend option(1 byte) | interface number(1 byte) */
@@ -2551,7 +2621,7 @@ void SendWeakupControlMsg(
    }
 #endif
    //USB/xhci: Enable remote wakeup for USB3 devices
-   nRet = usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+   nRet = Gobi_usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
                                          USB_REQ_CLEAR_FEATURE,
                                                  USB_RECIP_DEVICE,
                                          USB_DEVICE_REMOTE_WAKEUP, 
@@ -2564,7 +2634,7 @@ void SendWeakupControlMsg(
        DBG("[line:%d] send usb_control_msg failed!nRet = %d\n", __LINE__, nRet);
    }
    // 9x30(EM74xx) needs this when resume
-   nRet = usb_control_msg( pDev->udev,
+   nRet = Gobi_usb_control_msg( pDev->udev,
            usb_sndctrlpipe( pDev->udev, 0 ),
            SET_CONTROL_LINE_STATE_REQUEST,
            SET_CONTROL_LINE_STATE_REQUEST_TYPE,
