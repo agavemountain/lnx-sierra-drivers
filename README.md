@@ -1,10 +1,41 @@
 # Sierra Wireless Drivers for Linux
 
-This repository contains the GPL/BSD GobiNet and GobiSerial device drivers for Linux.  If you use the Sierra SDK, and not the 
-open source main-line drivers, these are the drivers that will be used.
+Table of Contents
+=================
 
-This is *NOT* the official repository.  Since I do not have access to the official code repository,
-this repo was built from source tar-ball releases.
+<!--ts-->
+
+   * [Sierra Wireless Drivers for Linux](#sierra-wireless-drivers-for-linux)
+   * [Table of Contents](#table-of-contents)
+   * [Introduction](#introduction)
+   * [Building the Drivers](#building-the-drivers)
+      * [Building on Ubuntu 16.04](#building-on-ubuntu-1604)
+   * [Driver Releases](#driver-releases)
+      * [Official Sierra Releases](#official-sierra-releases)
+      * [Original Driver Releases:](#original-driver-releases)
+         * [Releases (contained herein as individual commits)](#releases-contained-herein-as-individual-commits)
+   * [Other Resources](#other-resources)
+
+<!-- Added by: g4timesys, at: 2019-01-31T15:12-06:00 -->
+
+<!--te-->
+
+# Introduction
+
+This repository contains the GPL/BSD GobiNet and GobiSerial device drivers 
+for Linux.  If you use the Sierra Wireless QMI SDK, and not the 
+open source kernel main-line drivers, these are the drivers that you need.  The 
+official releases can be found at: [source.sierrawireless.com](https://source.sierrawireless.com/resources/airprime/software/usb-drivers-linux-qmi-software-history/).
+
+This is *NOT* the official repository but it does contain the official release
+code, with a few of my changes.  Where possible, I have kept release branches of the newer
+drivers so I could see what has changed between releases and see this driver
+should be pulled into our repository.  
+
+The branches are prefixed with "import/."  Fetching that branch will give you
+the same code as the released tarball.
+
+# Building the Drivers
 
 ## Building on Ubuntu 16.04
 
@@ -27,12 +58,13 @@ cd GobiNet; make; sudo make install
 sudo modprobe GobiSerial
 sudo modprobe GobiNet
 ```
+# Driver Releases
 
-## Sierra Provided Drivers
+## Official Sierra Releases
 
-Each release has been imported as a commit, so you can see what has changed from version to version.  The release
-notes are not maintained, so the source becomes valuable in deciding whether or not to take the latest 
-version. 
+Each release has been imported as a commit, so you can see what has changed from version to version.  Note,
+the release notes are not maintained by Sierra Wireless, and the code style can be jarring for a 
+embedded or Linux developer -- it is written in a Windows style. 
 
 Here are the available USB drivers releases that have been imported in the Linux QMI Software which are in this repository:
 
@@ -78,7 +110,7 @@ original open source drivers, from 2010.
 - Gobi3000Drivers1050_05192011.tar.gz
 - Gobi3000Drivers1060_06302011.tar.gz
 
-## Resources
+# Other Resources
 
 - [GobiNet driver provided by Netgear](http://www.downloads.netgear.com/files/aircard/Linux-Support-S2.13N2.25.zip) to support Kernel versions 3.19 and up
 - [Compiling GobiNet on Ubuntu](https://bytefreaks.net/gnulinux/compiling-gobinet-on-ubuntu-16-04-64bit)
