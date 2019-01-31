@@ -1,5 +1,4 @@
-Gobi3000 Serial driver for 1.0.30
-05/18/2011
+Gobi3000 Serial driver 2011-07-29-1026
 
 This readme covers important information concerning 
 the Gobi Serial driver.
@@ -15,7 +14,11 @@ Table of Contents
 
 1. WHAT'S NEW
 
-This Release (Gobi3000 Serial driver 1.0.30) 05/18/2011
+This Release (Gobi3000 Serial driver 2011-07-29-1026)
+a. Signal the device to leave low power mode on enumeration
+b. Change to new date-based versioning scheme
+
+Prior Release (Gobi3000 Serial driver 1.0.30) 05/18/2011
 a. Fix typo affecting 2.6.30 kernels
 
 Prior Release (Gobi3000 Serial driver 1.0.20) 01/05/2011
