@@ -126,6 +126,9 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/netdevice.h>
 #include <net/sch_generic.h>
 #include <linux/if_arp.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,11,0 ))
+#include <linux/sched/signal.h>
+#endif
 
 #if (LINUX_VERSION_CODE == KERNEL_VERSION( 2,6,35 ))
 #warning "Fix compilation error 'include/linux/compat.h:233: error: in /usr/src/linux-headers-2.6.35-22-generic/include/linux/compat.h, line 233, the variable name of second parameter,  replace *u32 to *u"
@@ -166,7 +169,11 @@ enum {
 #define raw_spin_is_locked(x) (&(x)->raw_lock == 0)
 #endif
 #endif
-#define SDK_PROCESS_NAME "slqssdk"
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 4,15,0 ))
+#define gobi_setup_timer(timer, fn, data) setup_timer(timer, fn, data) 
+#else
+#define gobi_setup_timer(timer, fn, data) timer_setup(timer, fn, 0) 
+#endif
 
 /* initially all zero */
 int qcqmi_table[MAX_QCQMI];
@@ -178,6 +185,9 @@ extern int iQMUXEnable;
 static inline bool IsDeviceValid( sGobiUSBNet * pDev );
 static void gobiRunSubmitIntURB(sGobiUSBNet *pGobiDev,struct urb * pIntURB);
 static void SubmitIntURBWorkFunction(struct work_struct *w);
+int IsOtherTaskUsingFilp(struct file *pFilp);
+int IsOpenTaskIsCurrent(struct file *pFilp);
+int IsCurrentTaskExit(void);
 
 #define CLIENT_READMEM_SNAPSHOT(clientID, pdev)\
    if( (debug & DEBUG_QMI) && clientmemdebug )\
@@ -235,6 +245,7 @@ void gobi_try_wake_up_process(struct task_struct * pTask);
 #define IOCTL_QMI_SET_IP_ADDRESS   0x8BE0 + 16
 #define IOCTL_QMI_SET_IPV6_ADDRESS   0x8BE0 + 17
 #define IOCTL_QMI_GET_IPALIAS_MODE   0x8BE0 + 18
+#define IOCTL_QMI_GET_SVC_VERSION_INFO   0x8BE0 + 19
 
 // CDC GET_ENCAPSULATED_RESPONSE packet
 #define CDC_GET_ENCAPSULATED_RESPONSE_LE 0x01A1ll
@@ -282,6 +293,29 @@ const int i = 1;
 #ifndef netdev_tx_t
 #define netdev_tx_t int
 #endif
+
+#if (__GNUC__ > 7 && defined(_ASM_X86_ATOMIC_H))|| \
+    (__GNUC__ == 7 && defined(_ASM_X86_ATOMIC_H) && (__GNUC_MINOR__ > 0 || \
+                       (__GNUC_MINOR__ == 0 && \
+                        __GNUC_PATCHLEVEL__ > 0)))
+#define gobi_atomic_read(x) atomic_read((const atomic_t *)x)
+#else
+#define gobi_atomic_read(x) atomic_read((atomic_t *)x)
+#endif
+#define in_serving_hardirq() (hardirq_count() &  HARDIRQ_OFFSET)
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,37 ))
+
+#define in_serving_softirq()	(softirq_count() & SOFTIRQ_OFFSET)
+#endif
+
+inline int wait_softirq_pending(void)
+{
+   if(local_softirq_pending())
+   {
+      return 1;
+   }
+   return 0;
+}
 
 static int gobi_qmimux_open(struct net_device *dev)
 {
@@ -438,11 +472,24 @@ inline int wait_preempt(void)
 inline void wait_interrupt(void)
 {
    int count = 0;
-   while(in_interrupt())
+   while(in_interrupt()||
+      in_softirq()|| //Soft IRQ
+      in_irq()|| //Hard IRQ
+      in_serving_softirq()||
+      in_serving_hardirq()||
+      wait_softirq_pending())     
    {
+
+      #if defined(cpu_relax)
+      cpu_relax();
+      #elif defined(rep_nop)
+      rep_nop();
+      #else
       wait_ms(50);
-      if(count>10)
+      #endif
+      if(count++>1000)
       {
+         printk(KERN_ERR "timeout");
          break;
       }
    }
@@ -596,17 +643,16 @@ static inline unsigned long LocalClientMemLockSpinLockIRQSave( sGobiUSBNet * pDe
    printk("(%d)%s :%d\n",task_pid_nr(current),__FUNCTION__,line);
    #endif
    mb();
+   local_irq_disable();
    if(pDev!=NULL)
    {
-      unsigned long flags = 0;
-      spin_lock_irqsave( &pDev->mQMIDev.mClientMemLock, flags);
+      spin_lock_irq( &pDev->mQMIDev.mClientMemLock);
       mb();
       #if SPIN_LOCK_DEBUG
       printk("(%d)%s :%d Locked\n",task_pid_nr(current),__FUNCTION__,line);
       #endif
-      pDev->mQMIDev.mFlag = flags;
       pDev->mQMIDev.pTask = current;
-      return flags;
+      return 0;
    }
    mb();
    return 0;
@@ -617,19 +663,20 @@ static inline int LocalClientMemUnLockSpinLockIRQRestore( sGobiUSBNet * pDev, un
    mb();
    if(pDev!=NULL)
    {
-      unsigned long flags = pDev->mQMIDev.mFlag;
       if(LocalClientMemLockSpinIsLock(pDev)==0)
       {
+         
          #if SPIN_LOCK_DEBUG
-         printk("(%d)%s :%d Not Locked\n",task_pid_nr(current),__FUNCTION__,line);
+         printk(KERN_WARNING "(%d)%s :%d Not Locked\n",task_pid_nr(current),__FUNCTION__,line);         
          #endif
+         local_irq_enable();
          return 0;
       }
       #if SPIN_LOCK_DEBUG
       printk("(%d)%s %d :%d\n",task_pid_nr(current),__FUNCTION__,__LINE__,line);
       #endif
       pDev->mQMIDev.pTask = NULL;
-      spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
+      spin_unlock_irq( &pDev->mQMIDev.mClientMemLock);
    }
    else
    {
@@ -637,9 +684,9 @@ static inline int LocalClientMemUnLockSpinLockIRQRestore( sGobiUSBNet * pDev, un
       printk("(%d)%s %d :%d\n",task_pid_nr(current),__FUNCTION__,__LINE__,line);
       #endif
       pDev->mQMIDev.pTask = NULL;
-      local_irq_restore(ulFlags);
    }
    mb();
+   local_irq_enable();
    return 0;
 }
 
@@ -845,6 +892,11 @@ int ResubmitIntURB(sGobiUSBNet * pDev, struct urb * pIntURB )
    {
       return -EINVAL;
    }
+   if( atomic_read(&pIntURB->reject))
+   {
+      DBG( "%s reject!\n" ,__FUNCTION__);
+      return -EINVAL;
+   }
 
    // Interval needs reset after every URB completion
    // QC suggestion, 4ms per poll:
@@ -934,7 +986,11 @@ void ReadCallback( struct urb * pReadURB )
       usb_unlink_urb(pReadURB);
       return;
    }
-
+   if( atomic_read(&pReadURB->reject))
+   {
+      DBG( "%s reject!\n" ,__FUNCTION__);
+      return;
+   }
    if (pReadURB->status != 0)
    {
       DBG( "Read status = %d\n", pReadURB->status );
@@ -945,6 +1001,8 @@ void ReadCallback( struct urb * pReadURB )
           DBG( "Read URB timeout/kill after recv data\n" );
           printk(KERN_WARNING "Read URB timeout/kill, recv data len (%d), cnt (%d)\n",
                   pReadURB->actual_length, pDev->readTimeoutCnt);
+          gobiRunSubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
+          return;
       }
       else
       {
@@ -1213,9 +1271,20 @@ void ReadCallback( struct urb * pReadURB )
    gobiRunSubmitIntURB(pDev, pDev->mQMIDev.mpIntURB );
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 4,15,0 ))
 void read_tmr_cb( struct urb * pReadURB )
 {
-  int result;
+   int result;
+#else
+void read_tmr_cb( struct timer_list *t)
+{
+   int result;
+   sGobiUSBNet *pDev = NULL;
+   struct urb *pReadURB = NULL;
+   pDev = from_timer(pDev, t, read_tmr);
+   if(pDev!=NULL)
+   pReadURB = pDev->mQMIDev.mpReadURB;
+#endif
 
   DBG( "%s called (%ld).\n", __func__, jiffies );
 
@@ -1302,7 +1371,7 @@ void IntCallback( struct urb * pIntURB )
                                DEFAULT_READ_URB_LENGTH,
                                ReadCallback,
                                pDev );
-         setup_timer( &pDev->read_tmr, (void*)read_tmr_cb, (unsigned long)pDev->mQMIDev.mpReadURB );
+         gobi_setup_timer( &pDev->read_tmr, (void*)read_tmr_cb, (unsigned long)pDev->mQMIDev.mpReadURB );
          mod_timer( &pDev->read_tmr, jiffies + msecs_to_jiffies(USB_READ_TIMEOUT) );
          mb();
          status = usb_submit_urb( pDev->mQMIDev.mpReadURB, GOBI_GFP_ATOMIC );
@@ -1541,7 +1610,7 @@ void KillRead( sGobiUSBNet * pDev )
       return ;
    }
    mb();
-   spin_lock_irq(&(pDev->urb_lock));
+   local_irq_disable();
 
    // Stop reading
    if (pDev->mQMIDev.mpReadURB != NULL)
@@ -1556,7 +1625,7 @@ void KillRead( sGobiUSBNet * pDev )
       usb_kill_urb( pDev->mQMIDev.mpIntURB );
    }
 
-   spin_unlock_irq(&(pDev->urb_lock));
+   local_irq_enable();
 
    // Release buffers
    kfree( pDev->mQMIDev.mpReadSetupPacket );
@@ -2223,6 +2292,7 @@ int WriteSync(
              0, pDev->mpIntf->cur_altsetting->desc.bInterfaceNumber,
              (void*)pWriteBuffer, writeBufferSize,
              USB_WRITE_TIMEOUT );
+       up_read(&pDev->shutdown_rwsem);
        if(signal_pending(current))
        {
           return -ERESTARTSYS;
@@ -2235,7 +2305,6 @@ int WriteSync(
        {
          return -ENXIO;
        }
-       up_read(&pDev->shutdown_rwsem);
        pDev->iShutdown_read_sem=- __LINE__;
        
        if (pDev->mbUnload >= eStatUnloading)
@@ -2429,7 +2498,7 @@ int GetClientID(
       {
          kfree( pWriteBuffer );
          DBG( "Invalid transaction ID!\n" );
-         return EINVAL;
+         return -EINVAL;
       }
 
       result = ReadAsync( pDev, QMICTL, transactionID, UpSem, &readSem ,1);
@@ -3465,6 +3534,20 @@ long UserspaceunlockedIOCTL(
 
          break;
 
+      case IOCTL_QMI_GET_SVC_VERSION_INFO:
+         if (arg == 0)
+         {
+            DBG( "Bad Svc Info buffer\n" );
+            return -EINVAL;
+         }
+         result = copy_to_user( (unsigned int *)arg, &pFilpData->mpDev->svcVersion[0], MAX_SVC_VERSION_SIZE);
+         if (result != 0)
+         {
+            DBG( "Copy to userspace failure %d\n", result );
+         }
+
+         return result;
+
       case IOCTL_QMI_ADD_MAPPING:
          {
              sGobiUSBNet * pDev = pFilpData->mpDev;
@@ -3997,13 +4080,28 @@ int UserspaceClose(
    pid_t pid = -1;
    int iTimeout = 0;
    int iFile_count = 0;
+   long refcnt = 0;
    mb();
    if(pFilp ==NULL)
    {
       printk( KERN_INFO "bad file data\n" );
       return -EBADF;
    }
-   
+   refcnt = atomic_long_read(&pFilp->f_count);
+   if (refcnt > 1)
+   {
+      if(current->exit_signal!=SIGCHLD)
+      {
+          if((IsOtherTaskUsingFilp(pFilp) ==1)&&
+                (IsOpenTaskIsCurrent(pFilp)||
+                 IsCurrentTaskExit()))
+          {
+             DBG( "f_count %ld - ignoring close\n", refcnt);
+             return -EBUSY;
+          }
+      }
+      DBG("f_count %ld - close %d %d\n", refcnt,IsOtherTaskUsingFilp(pFilp),IsOpenTaskIsCurrent(pFilp));
+   }
    pFilpData = (sQMIFilpStorage *)pFilp->private_data;
    if (pFilpData == NULL)
    {
@@ -4387,7 +4485,7 @@ ssize_t UserspaceRead(
    }
    else
    {
-      PrintHex(&pReadData,result);
+      PrintHex(pReadData,result);
    }
    if(pFilp==NULL)
    {
@@ -5353,6 +5451,33 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
          }
       }
    }while(result!=0);
+
+   // Fill Get Version info
+   memset(&pDev->svcVersion[0], 0, sizeof(pDev->svcVersion));
+   i=0;   
+   do
+   {
+      result = QMICTLGetVersionInfo(pDev);
+      if(isModuleUnload(pDev))
+      {
+         return -EFAULT;;
+      }
+      if (result != 0)
+      {
+         if(i++ > MAX_RETRY)
+         {
+            DBG( "QMI CTL Service Versions Procedure Error\n" );
+            
+            // Don't treat it fatal for driver loading, move on
+            break;
+         }
+      }
+      else
+      {
+         DBG( "QMI CTL Service Versions Procedure Successful\n" );
+      }
+   }while(result!=0);
+
    // allocate and fill devno with numbers
    result = alloc_chrdev_region( &devno, 0, 1, "qcqmi" );
    if (result < 0)
@@ -5616,7 +5741,7 @@ int CloseFileInode(sGobiUSBNet * pDev,int iCount)
                              }
                              printk( KERN_INFO "forcing close of opened file handle i_ino:%lu\n", i_no);
 
-                             reffrom = atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
+                             reffrom = gobi_atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
                              if (reffrom<2)
                              {
                                 DBG("opened file handle i_ino:%lu\n", i_no);
@@ -5880,14 +6005,14 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    {
       int ref = 0;
       mb();
-      ref = atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
+      ref = gobi_atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
       DBG("%s:%d(%d) tries:%d ref:%d\n",__FUNCTION__,__LINE__,iIntfNum,tries,ref);     
       if (ref > 1)
       {       
          int iLoop = 0;
          mb();
          wait_interrupt();
-         ref = atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
+         ref = gobi_atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
          if(wait_preempt()==1)
          if(ref>1)
          {
@@ -6009,11 +6134,11 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
 
    for (tries = 0; tries < 60; tries++)
    {
-      int ref = atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
+      int ref = gobi_atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
       if (ref > 1)
       {
          wait_ms(500);
-         ref = atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
+         ref = gobi_atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
          if(ref>1)
          {
             printk( KERN_WARNING "cdev in use by %d tasks\n", ref - 1 );
@@ -6886,6 +7011,7 @@ int QMICTLSetDataFormat( sGobiUSBNet * pDev )
    return 0;
 }
 
+
 /*===========================================================================
 METHOD:
    QMIWDASetQMAP (Public Method)
@@ -6993,6 +7119,136 @@ int QMIWDASetQMAP( sGobiUSBNet * pDev , u16 WDAClientID)
       DBG( "Data Format Cannot be set\n" );
    }
    return result;
+}
+/*===========================================================================
+METHOD:
+   QMICTLGetVersionInfo (Public Method)
+
+DESCRIPTION:
+   send get version info request and parse response
+
+PARAMETERS:
+   pDev     [ I ] - Device specific memory
+
+RETURN VALUE:
+   None
+===========================================================================*/
+int QMICTLGetVersionInfo( sGobiUSBNet * pDev )
+{
+   u8 transactionID;
+   struct semaphore readSem;
+   int result;
+   void * pWriteBuffer;
+   u16 writeBufferSize;
+   void * pReadBuffer;
+   u16 readBufferSize;
+   unsigned long flags;
+
+   DBG("\n");
+
+   // Send CTL GET VERSION INFO REQ
+   writeBufferSize = QMICTLGetVersionInfoReqSize();
+
+   pWriteBuffer = kmalloc( writeBufferSize, GFP_KERNEL );
+   if (pWriteBuffer == NULL)
+   {
+      return -ENOMEM;
+   }
+
+   // Start read
+   sema_init( &readSem, SEMI_INIT_DEFAULT_VALUE );
+   mb();
+
+   transactionID = QMIXactionIDGet(pDev);
+
+   // Fill buffer
+   result = QMICTLGetVersionInfoReq( pWriteBuffer,
+                            writeBufferSize,
+                            transactionID);
+
+   if (result < 0)
+   {
+      kfree( pWriteBuffer );
+      return result;
+   }
+
+   DBG("Sending QMI CTL Get Version Info Request, TransactionID: 0x%x\n", transactionID );
+
+   result = ReadAsync( pDev, QMICTL, transactionID, UpSem, &readSem ,1);
+   
+   if (result == 0) {
+       WriteSync( pDev,
+              pWriteBuffer,
+              writeBufferSize,
+              QMICTL );
+   }
+
+   kfree( pWriteBuffer );
+   wait_ms(QMI_CONTROL_MSG_DELAY_MS);
+   mb();
+   // Enter critical section
+   flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
+   spin_lock_irq(&(pDev->notif_lock));
+   barrier();
+   if (down_trylock( &readSem ) == 0)
+   {
+      // Pop the read data
+      if (PopFromReadMemList( pDev,
+                              QMICTL,
+                              transactionID,
+                              &pReadBuffer,
+                              &readBufferSize ) == true)
+      {
+         // Success
+         PrintHex(pReadBuffer, readBufferSize);
+         spin_unlock_irq(&(pDev->notif_lock));
+
+         // End critical section
+         LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+
+         // We care about the result: call Response  function
+         result = QMICTLGetVersionInfoResp(
+                      pReadBuffer,
+                      readBufferSize,
+                      &pDev->svcVersion[0], 
+                      sizeof(pDev->svcVersion));        
+
+         if(pReadBuffer)
+             kfree( pReadBuffer );
+
+         if (result != 0)
+         {
+            DBG( "Could not parse version info correctly in QMI response %d\n",result );
+            return result;
+         }
+      }
+      else
+      {
+         // Read mismatch/failure, unlock and continue
+         RemoveAndPopNotifyList(pDev,QMICTL,0,eClearCID);
+         spin_unlock_irq(&(pDev->notif_lock));
+         LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+         result = -1;
+      }
+   }
+   else
+   {
+      // Timeout, remove the async read
+      RemoveAndPopNotifyList(pDev,QMICTL,0,eClearCID);
+      spin_unlock_irq(&(pDev->notif_lock));
+      // End critical section
+      LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+      result = -1;
+   }
+
+   if (result < 0)
+   {
+      DBG( "QMI CTL Get Version Info error code %d\n", result );
+      return result;
+   }
+
+   // Success
+   return 0;
 }
 /*===========================================================================
 METHOD:
@@ -7521,6 +7777,7 @@ int WriteSyncNoResume(
              0, pDev->mpIntf->cur_altsetting->desc.bInterfaceNumber,
              (void*)pWriteBuffer, writeBufferSize,
              USB_WRITE_TIMEOUT );
+       up_read(&pDev->shutdown_rwsem);
        if(signal_pending(current))
        {
           return -ERESTARTSYS;
@@ -7533,7 +7790,7 @@ int WriteSyncNoResume(
        {
           return -EFAULT;
        }
-       up_read(&pDev->shutdown_rwsem);
+       
        pDev->iShutdown_read_sem=- __LINE__;
        
        if (pDev->mbUnload >= eStatUnloading)
@@ -7842,11 +8099,20 @@ int WriteSyncNoRetry(
          0, pDev->mpIntf->cur_altsetting->desc.bInterfaceNumber,
          (void*)pWriteBuffer, writeBufferSize,
          50 );//50ms timeout
+   up_read(&pDev->shutdown_rwsem);
+   if(signal_pending(current))
+   {
+      return -ERESTARTSYS;
+   }
+   if (IsDeviceDisconnect(pDev) )
+   {
+      return -ENXIO;
+   }
    if(pDev==NULL)
    {
       return -EFAULT;
    }
-   up_read(&pDev->shutdown_rwsem);
+   
    pDev->iShutdown_read_sem=- __LINE__;
    
    if (pDev->mbUnload >= eStatUnloading)
@@ -8365,16 +8631,14 @@ int iIsValidQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset)
    if((pSKB->data[iOffset+1]&0x8F)||
       (pSKB->data[iOffset+1]==0x00))
    {
-      switch(pSKB->data[iOffset])
+      //Downlink padding bytes Less or equal 64 Bytes
+      if(pSKB->data[iOffset] > QMAP_MAX_PADDING_BYTES)
       {
-         case 0x00:
-         case 0x01:
-         case 0x02:
-         case 0x03:
-         case 0x04:
-            return 1;
-         default:
-            return 0;
+         return 0;
+      }
+      else
+      {
+         return 1;
       }
    }
    return 0;
@@ -8662,19 +8926,142 @@ void GobiDestoryWorkQueue(sGobiUSBNet *pGobiDev)
    
    if(pGobiDev->wqprobe!=NULL)
    {
-      DBG("flush_workqueue probe\n");
-      flush_workqueue(pGobiDev->wqprobe);
-      DBG("destroy_workqueue probe\n");
-      destroy_workqueue(pGobiDev->wqprobe);
-      pGobiDev->wqprobe = NULL;
+      if(cancel_delayed_work (&pGobiDev->dwprobe))
+      {
+         DBG("flush_workqueue probe\n");
+         flush_workqueue(pGobiDev->wqprobe);
+         DBG("destroy_workqueue probe\n");
+         destroy_workqueue(pGobiDev->wqprobe);
+         pGobiDev->wqprobe = NULL;
+      }
    }
    if(pGobiDev->wq!=NULL)
    {
-      DBG("flush_workqueue urb");
-      flush_workqueue(pGobiDev->wq);
-      DBG("destroy_workqueue urb\n");
-      destroy_workqueue(pGobiDev->wq);
-      pGobiDev->wq = NULL;
+      if(cancel_delayed_work (&pGobiDev->dw))
+      {
+         DBG("flush_workqueue urb");
+         flush_workqueue(pGobiDev->wq);
+         DBG("destroy_workqueue urb\n");
+         destroy_workqueue(pGobiDev->wq);
+         pGobiDev->wq = NULL;
+      }
    }
    
 }
+
+/*===========================================================================
+iRemoveQMAPPaddingBytes
+
+   RemoveQMAPPaddingBytes (Private Method)
+
+DESCRIPTION:
+   Remove QMAP header and padding in SKB buffer. 
+
+PARAMETERS:
+   skb                 [ I ] - Pointer to sk_buff pointer
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int iRemoveQMAPPaddingBytes(struct sk_buff *skb)
+{
+   u8 padding_lenth = 0;
+   if(skb==NULL)
+   return -1;
+   padding_lenth = (u8)skb->data[0];
+
+   if(padding_lenth>0)
+   {
+      NETDBG("padding_lenth:%d\n",padding_lenth);
+      if((padding_lenth<=QMAP_MAX_PADDING_BYTES)&&
+          skb->len >= padding_lenth)
+      {
+         skb_trim(skb,skb->len - padding_lenth);
+      }
+      else
+      {
+         return -1;
+      }
+   }
+   if(skb->len>=QMUX_HEADER_LENGTH)
+   {
+      skb_pull(skb,QMUX_HEADER_LENGTH);
+   }
+   else
+   {
+      return -1;
+   }
+   return 0;
+}
+
+int IsOtherTaskUsingFilp(struct file *pFilp)
+{
+   sQMIFilpStorage * pFilpData = NULL;
+   long refcnt = 0;
+   if(pFilp ==NULL)
+   {
+      return 0;
+   }
+
+   refcnt = atomic_long_read(&pFilp->f_count);
+   if (refcnt == 1)
+   {
+      return 0;
+   }   
+   pFilpData = (sQMIFilpStorage *)pFilp->private_data;
+   if (pFilpData == NULL)
+   {
+      return 0;
+   }
+   if(IsDeviceDisconnect(pFilpData->mpDev))
+   {
+      return 0;
+   }
+   if((pFilpData->pOpenTask!=pFilpData->pReadTask)||
+      (pFilpData->pOpenTask!=pFilpData->pWriteTask)||
+      (pFilpData->pOpenTask!=pFilpData->pIOCTLTask))
+   {
+      return 1;
+   }
+   return 0;
+}
+
+int IsOpenTaskIsCurrent(struct file *pFilp)
+{
+   sQMIFilpStorage * pFilpData = NULL;
+   if(pFilp ==NULL)
+   {
+      return 0;
+   }
+   pFilpData = (sQMIFilpStorage *)pFilp->private_data;
+   if (pFilpData == NULL)
+   {
+      return 0;
+   }
+   if(IsDeviceDisconnect(pFilpData->mpDev))
+   {
+      return 0;
+   }
+   #if 0
+   printk(KERN_INFO "c/o/r/w/i %d/%d/%d/%d/%d\n",
+   task_pid_nr(current),
+   task_pid_nr(pFilpData->pOpenTask),
+   task_pid_nr(pFilpData->pReadTask),
+   task_pid_nr(pFilpData->pWriteTask),
+   task_pid_nr(pFilpData->pIOCTLTask));
+   #endif
+   if(pFilpData->pOpenTask==current)
+   {
+      return 1;
+   }
+
+   return 0;
+}
+
+int IsCurrentTaskExit(void)
+{
+    if(current->flags & PF_EXITING)
+        return 1;
+    return 0;
+}
+

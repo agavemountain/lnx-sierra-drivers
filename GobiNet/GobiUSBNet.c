@@ -137,7 +137,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2018-02-28/SWI_2.50"
+#define DRIVER_VERSION "2018-06-22/SWI_2.52"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -240,6 +240,7 @@ int GobiUSBNetUpdateRxUrbSize(struct net_device *netdev, u32 new_rx_urb_size);
 void DestroyQMAPRxBuffer(sGobiUSBNet *pGobiDev);
 int CreateQMAPRxBuffer(sGobiUSBNet *pGobiDev);
 void *gobi_skb_push(struct sk_buff *pSKB, unsigned int len);
+int GobiUSBLockReset( struct usb_interface * pIntf );
 
 int CreateQMAPRxBuffer(sGobiUSBNet *pGobiDev)
 {
@@ -421,16 +422,20 @@ int work_function(void *data)
          usbnet_update_max_qlen(pGobiDev->mpNetDev);
          #endif
          #endif
-         if(pGobiDev->iQMUXEnable)
-         {
-            GobiUSBNetUpdateRxUrbSize(pGobiDev->mpNetDev->net,pGobiDev->ULDatagramSize);
-            CreateQMAPRxBuffer(pGobiDev);
-         }
          printk(KERN_INFO "RawIP mode\n" );
       }
       else
       {
          printk(KERN_INFO "Ethernet mode\n" );
+      }
+      if(pGobiDev->iQMUXEnable)
+      {
+         GobiUSBNetUpdateRxUrbSize(pGobiDev->mpNetDev->net,pGobiDev->ULDatagramSize);
+         CreateQMAPRxBuffer(pGobiDev);
+      }
+      else
+      {
+         GobiUSBNetUpdateRxUrbSize(pGobiDev->mpNetDev->net,GOBI_MAX_SINGLE_PACKET_SIZE);
       }
    }
    if(pGobiDev)
@@ -470,10 +475,7 @@ int work_function(void *data)
          if(-ETIMEDOUT==status)
          {
             DBG( "Device usbnet_disconnect!\n" );
-            usbnet_disconnect( pGobiDev->mUsb_Interface);
-            //workqueue should be canceled here.
-            DBG( "Device usb_set_intfdata!\n" );
-            usb_set_intfdata(pGobiDev->mUsb_Interface, NULL);
+            GobiUSBLockReset(pGobiDev->mUsb_Interface);
             return 0;
          }
       }
@@ -489,11 +491,7 @@ int work_function(void *data)
       }
       if(-ETIMEDOUT==status)
       {
-         struct usb_device *udev;
-         DBG("RESET USB DEVICE...\n");
-         udev = interface_to_usbdev(pGobiDev->mUsb_Interface);
-         if(pGobiDev->mUsb_Interface->cur_altsetting->desc.bInterfaceNumber ==8)
-         usb_reset_device(udev);
+         GobiUSBLockReset(pGobiDev->mUsb_Interface);
       }
    }
    
@@ -1237,7 +1235,11 @@ static int GobiNetDriverRxQMAPFixup(struct usbnet  *pDev,
             {
                pGobiDev->iPacketInComplete = 0;
             }
-            skb_pull(nskb,QMUX_HEADER_LENGTH);
+            if(iRemoveQMAPPaddingBytes(nskb)!=0)
+            {
+               NETDBG("Remove Padding Error\n");
+               return 0;
+            }
             /* Copy data section to a temporary buffer */
 
             gobi_skb_push(nskb,ETH_HLEN);
@@ -1258,14 +1260,21 @@ static int GobiNetDriverRxQMAPFixup(struct usbnet  *pDev,
             }
             DBG( "Remove MuxID From Modem modified: ");
             PrintHex (nskb->data, nskb->len);
-            result = gobi_dev_forward_skb(pNetDev,nskb);
-            if ( result != NET_RX_SUCCESS)
+            if(pGobiDev->iIPAlias==0)
             {
-               NETDBG("!netif_rx NET_RX_SUCCESS: %d\n",result);
+               result = gobi_dev_forward_skb(pNetDev,nskb);
+               if ( result != NET_RX_SUCCESS)
+               {
+                  NETDBG("!netif_rx NET_RX_SUCCESS: %d\n",result);
+               }
+               else
+               {
+                  NETDBG( "netif_rx NET_RX_SUCCESS\n" );
+               }
             }
             else
             {
-               NETDBG( "netif_rx NET_RX_SUCCESS\n" );
+               usbnet_skb_return(pDev,nskb);
             }
          } 
       }
@@ -3241,6 +3250,48 @@ void *gobi_skb_push(struct sk_buff *pSKB, unsigned int len)
        skb_push(pSKB,len);
     }
     return pSKB->data;
+}
+
+/*===========================================================================
+METHOD:
+   GobiUSBLockReset (Private Method)
+
+DESCRIPTION:
+   add data to the start of a buffer
+
+PARAMETERS
+   pIntf          [ I ] - usb interface
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int GobiUSBLockReset( struct usb_interface * pIntf )
+{
+   int ret =-1;
+   struct usb_device *udev;
+   if(!pIntf)
+   {
+      printk(KERN_ERR "NULL Intf\n");
+      return -1;
+   }
+   udev = interface_to_usbdev(pIntf);
+   if(!udev)
+   {
+      printk(KERN_ERR "NULL usb_device\n");
+      return -1;
+   }
+   ret = usb_lock_device_for_reset(udev, NULL);
+   if (ret < 0) 
+   {
+      printk(KERN_ERR "Reset Device\n");
+      return -1;
+   }
+   printk(KERN_INFO "Reset Device\n");
+   udev = interface_to_usbdev(pIntf);
+   usb_reset_device(udev);
+   usb_unlock_device(udev);
+   return 0;
 }
 
 module_exit( GobiUSBNetModExit );

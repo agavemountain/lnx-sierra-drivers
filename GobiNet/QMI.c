@@ -102,6 +102,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 extern int debug;
 
+#define QMIWDASETDATAFORMATQMAPREQSIZE 39
 /*=========================================================================*/
 // Get sizes of buffers needed by QMI requests
 /*=========================================================================*/
@@ -247,7 +248,7 @@ u16 QMIWDASetDataFormatReqSize( int te_flow_control ,int qmuxenable)
    u16 uQmuxLength =0;
    if(qmuxenable!=0)
    {
-      uQmuxLength = 32;
+      uQmuxLength = QMIWDASETDATAFORMATQMAPREQSIZE;
    }
    if(te_flow_control!=eSKIP_TE_FLOW_CONTROL_TLV)
    {
@@ -285,6 +286,21 @@ RETURN VALUE:
    u16 - size of buffer
 ===========================================================================*/
 u16  QMICTLSyncReqSize( void )
+{
+   return sizeof( sQMUX ) + 6; 
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLGetVersionInfoReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMICTLGetVersionInfoReq
+ 
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16  QMICTLGetVersionInfoReqSize( void )
 {
    return sizeof( sQMUX ) + 6; 
 }
@@ -887,18 +903,21 @@ int QMIWDASetDataFormatReq(
    put_unaligned( cpu_to_le16(0x0020), (u16 *)(pBuffer + sizeof( sQMUX ) + 3) );
    if(iqmuxenable!=0)
    {
-      uTotalTlvLength = 32;
+      uTotalTlvLength = QMIWDASETDATAFORMATQMAPREQSIZE;
    }
    // Size of TLV's
    if(te_flow_control!=eSKIP_TE_FLOW_CONTROL_TLV)
    {
       /* TE_FLOW_CONTROL */
       put_unaligned( cpu_to_le16(0x0016 + uTotalTlvLength), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+      uTotalTlvLength += 0x0016;
    }
    else
    {
       put_unaligned( cpu_to_le16(0x0012 + uTotalTlvLength), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+      uTotalTlvLength += 0x0012;
    } 
+   
    // Tlv 0x10 QOS Data Format
    /* TLVType QOS Data Format 1 byte  */
    *(u8 *)(pBuffer + sizeof( sQMUX ) +  7) = 0x10; // type data format
@@ -908,7 +927,7 @@ int QMIWDASetDataFormatReq(
 
    /* DataFormat: 0-default; 1-QoS hdr present 2 bytes */
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 10) = 0; /* no-QOS header */
-   uTotalTlvLength += 1+2+1;
+   uTotalTlvLength -= (1+2+1);
    //End Tlv 0x10
    
    //Tlv 0x11 Link protocol used by the client
@@ -931,7 +950,7 @@ int QMIWDASetDataFormatReq(
       put_unaligned( cpu_to_le32(0x00000001), (u32 *)(pBuffer + sizeof( sQMUX ) + 14));
       DBG("Request Ethernet Data Format\n");
    }
-   uTotalTlvLength += 1+2+4;
+   uTotalTlvLength -= (1+2+4);
    //End Tlv 0x11
 
    //Tlv 0x13 Downlink Data Aggregation Protocol
@@ -952,7 +971,7 @@ int QMIWDASetDataFormatReq(
       //DL data aggregation is disabled
       put_unaligned( cpu_to_le32(0x00000000), (u32 *)(pBuffer + sizeof( sQMUX ) + 21));
    }
-   uTotalTlvLength += 1+2+4;
+   uTotalTlvLength -= (1+2+4);
    //End 0x13
 
    //Tlv 0x1A TE Flow Control
@@ -974,12 +993,16 @@ int QMIWDASetDataFormatReq(
          *(u8 *)(pBuffer + sizeof( sQMUX ) + 28) = 1; /* flow control done by TE */
       }
       iIndex+=1;
-      uTotalTlvLength += 1+2+1;
+      uTotalTlvLength -= (1+2+1);
    } /* TE_FLOW_CONTROL */
    //End Tlv 0x1A
    // success
    if(iqmuxenable==0)
    {
+      if(uTotalTlvLength!=0)
+      {
+         printk(KERN_WARNING "uTotalTlvLength:0x%x",uTotalTlvLength);
+      }
       return QMIWDASetDataFormatReqSize(te_flow_control,iqmuxenable);
    }
    //Tlv 0x12 Uplink Data Aggregation Protocol
@@ -991,7 +1014,7 @@ int QMIWDASetDataFormatReq(
    // UL QMAP is enabled
    put_unaligned( cpu_to_le32(0x00000005), (u32 *)(pBuffer + sizeof( sQMUX ) + iIndex));
    iIndex+=4;
-   uTotalTlvLength += 1+2+4;
+   uTotalTlvLength -= (1+2+4);
    //End Tlv 0x12
    
    
@@ -1004,7 +1027,7 @@ int QMIWDASetDataFormatReq(
    // Datagram is set as 32768
    put_unaligned( cpu_to_le32(0x00000020), (u32 *)(pBuffer + sizeof( sQMUX ) + iIndex));
    iIndex+=4;
-   uTotalTlvLength += 1+2+4;
+   uTotalTlvLength -= (1+2+4);
    //End Tlv 0x15
    
 
@@ -1020,7 +1043,7 @@ int QMIWDASetDataFormatReq(
    DBG("Datagramsize:%d\n",QMAP_SIZE_OF_RX_BUFFER);
 
    iIndex+=4;
-   uTotalTlvLength += 1+2+4;
+   uTotalTlvLength -= (1+2+4);
    //End Tlv 0x16
    //Tlv 0x17 Peripheral End Point ID
    *(u8 *)(pBuffer + sizeof( sQMUX ) + iIndex)  = 0x17;
@@ -1033,10 +1056,24 @@ int QMIWDASetDataFormatReq(
    iIndex+=4;
    put_unaligned( cpu_to_le32(mIntfNum), (u32 *)(pBuffer + sizeof( sQMUX ) + iIndex));
    iIndex+=4;
-   uTotalTlvLength += 1+2+8;
+   uTotalTlvLength -= (1+2+8);
    //End Tlv 0x17
-   
-   DBG("uTotalTlvLength:0x%x",uTotalTlvLength);
+
+   //Tlv 0x19 QMAP Downlink Minimum Padding
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + iIndex)  = 0x19;
+   iIndex++;
+   // Size
+   put_unaligned( cpu_to_le16(0x0004), (u16 *)(pBuffer + sizeof( sQMUX ) + iIndex));
+   iIndex+=2;
+   // Set padding length to zero
+   put_unaligned(cpu_to_le32(0x00000000), (u32 *)(pBuffer + sizeof( sQMUX ) + iIndex));
+   iIndex+=4;
+   uTotalTlvLength -= (1+2+4);
+   //End Tlv 0x19
+   if(uTotalTlvLength!=0)
+   {
+      printk(KERN_WARNING "uTotalTlvLength:0x%x",uTotalTlvLength);
+   }
    return iIndex;
 }
 
@@ -1148,6 +1185,45 @@ int QMICTLSyncReq(
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID;
    // Message ID
    put_unaligned( cpu_to_le16(0x0027), (u16 *)(pBuffer + sizeof( sQMUX ) + 2) );
+   // Size of TLV's
+   put_unaligned( cpu_to_le16(0x0000), (u16 *)(pBuffer + sizeof( sQMUX ) + 4) );
+
+  // success
+  return sizeof( sQMUX ) + 6;
+}
+
+/*===========================================================================
+METHOD:
+   QMICTLGetVersionInfoReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI CTL Version Info Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMICTLGetVersionInfoReq(
+   void *pBuffer,
+   u16  buffSize,
+   u16  transactionID )
+{
+   if (pBuffer == 0 || buffSize < QMICTLGetVersionInfoReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   // Request
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
+   // Transaction ID
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 1) = transactionID;
+   // Message ID
+   put_unaligned( cpu_to_le16(0x0021), (u16 *)(pBuffer + sizeof( sQMUX ) + 2) );
    // Size of TLV's
    put_unaligned( cpu_to_le16(0x0000), (u16 *)(pBuffer + sizeof( sQMUX ) + 4) );
 
@@ -1543,7 +1619,7 @@ int QMIWDASetDataFormatResp(
 {
 
    int result;
-
+   u32 u32DlminPadding = (u32)-1;
    u8 pktLinkProtocol[4];
 
    // Ignore QMUX and SDU
@@ -1578,14 +1654,14 @@ int QMIWDASetDataFormatResp(
       result = GetTLV( pBuffer, buffSize, 0x15, (void*)ULDatagram, 4 );
       if (result != 4)
       {
-         printk("FAIL: ULDatagram\n");
+         printk(KERN_WARNING"FAIL: ULDatagram\n");
       }
       else
       {
          put_unaligned( le32_to_cpu(*ULDatagram), ULDatagram);
          if(*ULDatagram>QMAP_SIZE_OF_RX_BUFFER)
          {
-            printk("WARN: ULDatagram:%u\n",*ULDatagram); 
+            printk(KERN_WARNING"WARN: ULDatagram:%u\n",*ULDatagram); 
          }
       }
    }
@@ -1594,14 +1670,14 @@ int QMIWDASetDataFormatResp(
       result = GetTLV( pBuffer, buffSize, 0x16, (void*)ULDatagramSize, 4 );
       if (result != 4)
       {
-         printk("FAIL: ULDatagramSize\n"); 
+         printk(KERN_WARNING"FAIL: ULDatagramSize\n"); 
       }
       else
       {
          put_unaligned( le32_to_cpu(*ULDatagramSize), ULDatagramSize);
          if(*ULDatagramSize>QMAP_SIZE_OF_RX_BUFFER)
          {
-            printk("WARN: ULDatagramSize:%u\n",*ULDatagramSize); 
+            printk(KERN_WARNING"WARN: ULDatagramSize:%u\n",*ULDatagramSize); 
          }
       }
    }
@@ -1613,6 +1689,13 @@ int QMIWDASetDataFormatResp(
       DBG("EFAULT: Wrong TLV format\n"); 
       return 0;
       
+   }
+
+   result = GetTLV( pBuffer, buffSize, 0x1A,
+                        &u32DlminPadding, 4);
+   if (result == 4)
+   {
+      DBG("u32DlminPadding :%u\n",u32DlminPadding);
    }
 
    if(iDataMode==eDataMode_RAWIP)
@@ -1762,6 +1845,62 @@ int QMICTLSyncResp(
 
    return result;
 }
+
+/*===========================================================================
+METHOD:
+   QMICTLGetVersionInfoResp (Public Method)
+
+DESCRIPTION:
+   Validate the QMI CTL Version Info Response
+
+PARAMETERS
+   pBuffer         [ I ] - Buffer to be parsed
+   buffSize        [ I ] - Size of pBuffer
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int QMICTLGetVersionInfoResp(
+   void *pBuffer,
+   u16   buffSize,
+   u8 *  pSvcVersion,
+   int   versionInfoSize )
+{
+   int result;
+
+   // Ignore QMUX (2 bytes for QMI CTL) and SDU
+   u8 offset = sizeof( sQMUX ) + 2;
+
+   if (pBuffer == 0 || buffSize < offset)
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+
+   result = GetQMIMessageID( pBuffer, buffSize );
+   if (result != 0x21)
+   {
+      return -EFAULT;
+   }
+
+   result = ValidQMIMessage( pBuffer, buffSize );
+   if (result != 0)
+   {
+      DBG("EFAULT: Get Version Info Bad Response\n"); 
+      return -EFAULT;
+   }
+
+   result = GetTLV( pBuffer, buffSize, 0x01, (void*)pSvcVersion, versionInfoSize );
+   if (result < 0)
+   {
+      return result;
+   }
+   return 0;
+}
+
 
 /*===========================================================================
 METHOD:
