@@ -186,6 +186,7 @@ int GobiNetSuspend(
 #define IOCTL_QMI_READ_MAPPING 0x8BE0 + 11
 #define IOCTL_QMI_DUMP_MAPPING 0x8BE0 + 12
 #define IOCTL_QMI_GET_USBNET_STATS 0x8BE0 + 13
+#define IOCTL_QMI_SET_DEVICE_MTU 0x8BE0 + 14
 
 // CDC GET_ENCAPSULATED_RESPONSE packet
 #define CDC_GET_ENCAPSULATED_RESPONSE_LE 0x01A1ll
@@ -766,6 +767,10 @@ void IntCallback( struct urb * pIntURB )
          // Read 'thread' dies here
          return;
       }
+      if(pIntURB->status<0)
+      {
+         return;
+      }
    }
    else
    {
@@ -1242,7 +1247,7 @@ int ReadSync(
       spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
 
       // Wait for notification
-      result = down_interruptible( &readSem);
+      result = down_timeout( &readSem,msecs_to_jiffies(5000));
       if (result != 0)
       {
          DBG( "Interrupted %d\n", result );
@@ -1569,7 +1574,7 @@ PARAMETERS:
 RETURN VALUE:
    None
 ===========================================================================*/
-void ReleaseClientID(
+bool ReleaseClientID(
    sGobiUSBNet *    pDev,
    u16                clientID )
 {
@@ -1589,7 +1594,7 @@ void ReleaseClientID(
    if (IsDeviceValid( pDev ) == false)
    {
       DBG( "invalid device\n" );
-      return;
+      return false;
    }
 
    DBG( "releasing 0x%04X\n", clientID );
@@ -1609,6 +1614,7 @@ void ReleaseClientID(
       if (pWriteBuffer == NULL)
       {
          DBG( "memory error\n" );
+         return false;
       }
       else
       {
@@ -1637,6 +1643,7 @@ void ReleaseClientID(
             if (result < 0)
             {
                DBG( "bad write status %d\n", result );
+               return false;
             }
             else
             {
@@ -1647,6 +1654,7 @@ void ReleaseClientID(
                if (result < 0)
                {
                   DBG( "bad read status %d\n", result );
+                  return false;
                }
                else
                {
@@ -1660,6 +1668,7 @@ void ReleaseClientID(
                   if (result < 0)
                   {
                      DBG( "error %d parsing response\n", result );
+                     return false;
                   }
                }
             }
@@ -1694,7 +1703,7 @@ void ReleaseClientID(
          {
             kfree( pDelData );
          }
-
+         DBG("Delete client Mem\r\n");
          // Delete client Mem
          kfree( *ppDelClientMem );
 
@@ -1704,14 +1713,18 @@ void ReleaseClientID(
       else
       {
          // I now point to (a pointer of ((the node I was at)'s mpNext))
+          if(*ppDelClientMem==NULL)
+          {
+              DBG("ppDelClientMem NULL %d\r\n",__LINE__);
+              break;
+          }
          ppDelClientMem = &(*ppDelClientMem)->mpNext;
       }
    }
 
    // End Critical section
    spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
-
-   return;
+   return true;
 }
 
 /*===========================================================================
@@ -1917,6 +1930,11 @@ bool PopFromReadMemList(
          *ppReadMemList, pDelReadMemList );
    if (pDelReadMemList != NULL)
    {
+       if(*ppReadMemList==NULL)
+       {
+           DBG("%d\r\n",__LINE__);
+           return false;
+       }
       *ppReadMemList = (*ppReadMemList)->mpNext;
 
       // Copy to output
@@ -2526,7 +2544,21 @@ long UserspaceunlockedIOCTL(
          }
 
          break;
-
+         case IOCTL_QMI_SET_DEVICE_MTU:
+         {
+             sGobiUSBNet *pDev = pFilpData->mpDev;
+             // struct usbnet * pNet = netdev_priv( pDev->mpNetDev->net );
+             int iArgp = (int)arg;
+             if (iArgp <= 0)
+             {
+                 DBG( "Bad MTU buffer\n" );
+                 return -EINVAL;
+             }
+             DBG( "new mtu :%d ,qcqmi:%d\n",iArgp,(int)pDev->mQMIDev.qcqmi );
+             pDev->mtu = iArgp;
+             usbnet_change_mtu(pDev->mpNetDev->net ,pDev->mtu);
+         }
+         return 0;
       default:
          return -EBADRQC;
    }
@@ -3082,6 +3114,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    pDev->mbQMIValid = true;
    pDev->readTimeoutCnt = 0;
    pDev->writeTimeoutCnt = 0;
+   pDev->mtu = 0;
    init_rwsem(&pDev->shutdown_rwsem);
 
 
@@ -3319,8 +3352,9 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    {
       DBG( "release 0x%04X\n", pDev->mQMIDev.mpClientMemList->mClientID );
 
-      ReleaseClientID( pDev,
-                       pDev->mQMIDev.mpClientMemList->mClientID );
+      if (ReleaseClientID(pDev,
+                       pDev->mQMIDev.mpClientMemList->mClientID) == false)
+          break;
       // NOTE: pDev->mQMIDev.mpClientMemList will
       //       be updated in ReleaseClientID()
    }
@@ -3557,9 +3591,7 @@ bool QMIReady(
          spin_unlock_irqrestore( &pDev->mQMIDev.mClientMemLock, flags );
       }
    }
-   if(pWriteBuffer)
    kfree( pWriteBuffer );
-
    // Did we time out?
    if (curTime >= timeout)
    {
@@ -4066,7 +4098,6 @@ int QMIDMSGetMEID( sGobiUSBNet * pDev )
                                readBufferSize,
                                &pDev->mMEID[0],
                                14 );
-   if(pReadBuffer)                               
    kfree( pReadBuffer );
 
    if (result < 0)
@@ -4080,7 +4111,7 @@ int QMIDMSGetMEID( sGobiUSBNet * pDev )
 
    ReleaseClientID( pDev, DMSClientID );
 
-   // Success
+   // always return Success as MEID is only available on CDMA devices only
    return 0;
 }
 
