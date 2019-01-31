@@ -130,14 +130,14 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 #ifdef CONFIG_ANDROID
 #define _PROBE_LOCK_ 1
 #else
-#define _PROBE_LOCK_ 0
+#define _PROBE_LOCK_ 1
 #endif
 //-----------------------------------------------------------------------------
 // Definitions
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2018-06-22/SWI_2.52"
+#define DRIVER_VERSION "2018-08-24/SWI_2.53"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -241,6 +241,11 @@ void DestroyQMAPRxBuffer(sGobiUSBNet *pGobiDev);
 int CreateQMAPRxBuffer(sGobiUSBNet *pGobiDev);
 void *gobi_skb_push(struct sk_buff *pSKB, unsigned int len);
 int GobiUSBLockReset( struct usb_interface * pIntf );
+void gobi_dev_deactivate(struct net_device *dev);
+void gobi_netif_stop_queue(struct net_device *dev);
+void gobi_usbnet_stop(struct net_device *net);
+int gobi_rtnl_trylock(void);
+void stop_virtual_netdev(struct net_device *dev);
 
 int CreateQMAPRxBuffer(sGobiUSBNet *pGobiDev)
 {
@@ -266,22 +271,21 @@ void DeleteQMUXNet(sGobiUSBNet * pGobiDev)
       return;
    if(pGobiDev->mpNetDev == NULL)
       return;
-   usbnet_stop(pGobiDev->mpNetDev->net);//IPV6 lock error
-   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,0,0 ))
-   if (pGobiDev->mpNetDev->net->flags & IFF_UP)
-   dev_deactivate(pGobiDev->mpNetDev->net);
-   #endif
+   gobi_usbnet_stop(pGobiDev->mpNetDev->net);//IPV6 lock error
+   gobi_dev_deactivate(pGobiDev->mpNetDev->net);
    if(pGobiDev->iQMUXEnable!=0)
    {
-      netif_stop_queue(pGobiDev->mpNetDev->net);
+      gobi_netif_stop_queue(pGobiDev->mpNetDev->net);
       netif_carrier_off(pGobiDev->mpNetDev->net);
-      usbnet_stop(pGobiDev->mpNetDev->net);
-      netif_stop_queue(pGobiDev->mpNetDev->net);
+      gobi_usbnet_stop(pGobiDev->mpNetDev->net);
+      gobi_netif_stop_queue(pGobiDev->mpNetDev->net);
       if(netif_running(pGobiDev->mpNetDev->net))
       {
          DBG("running\n");
       }
-      if (!rtnl_trylock()) {
+      if (!gobi_rtnl_trylock()) 
+      {
+         DBG("!gobi_rtnl_trylock\n");
          restart_syscall();
          return;
       }
@@ -296,24 +300,34 @@ void DeleteQMUXNet(sGobiUSBNet * pGobiDev)
          }
       }
       rtnl_unlock();
-      netif_stop_queue(pGobiDev->mpNetDev->net);
+      gobi_netif_stop_queue(pGobiDev->mpNetDev->net);
       netif_carrier_off(pGobiDev->mpNetDev->net);
    }
 }
+
 void StopQMUXNet(sGobiUSBNet * pGobiDev)
 {
    if(pGobiDev==NULL)
       return ;
    if(pGobiDev->mpNetDev == NULL)
       return;
-   usbnet_stop(pGobiDev->mpNetDev->net);//IPV6 lock error
+   if(pGobiDev->iStoppingNetDev==1)
+      return ;
+   pGobiDev->iStoppingNetDev=1;
+   if (!gobi_rtnl_trylock()) 
+   {
+      printk(KERN_INFO "!force rtnl unlock\n");
+   }
+   rtnl_unlock();
+   gobi_usbnet_stop(pGobiDev->mpNetDev->net);//IPV6 lock error
+   gobi_dev_deactivate(pGobiDev->mpNetDev->net);
    if(pGobiDev->iQMUXEnable!=0)
    {
       int i=0;
-      netif_stop_queue(pGobiDev->mpNetDev->net);
+      gobi_netif_stop_queue(pGobiDev->mpNetDev->net);
       netif_carrier_off(pGobiDev->mpNetDev->net);
-      usbnet_stop(pGobiDev->mpNetDev->net);
-      netif_stop_queue(pGobiDev->mpNetDev->net);
+      gobi_usbnet_stop(pGobiDev->mpNetDev->net);
+      gobi_netif_stop_queue(pGobiDev->mpNetDev->net);
       if(netif_running(pGobiDev->mpNetDev->net))
       {
          DBG("running\n");
@@ -324,13 +338,12 @@ void StopQMUXNet(sGobiUSBNet * pGobiDev)
       {
          if(pGobiDev->pNetDevice[i]!=NULL)
          {
-            netif_stop_queue(pGobiDev->pNetDevice[i]);
-            netif_carrier_off(pGobiDev->pNetDevice[i]);  
+            stop_virtual_netdev(pGobiDev->pNetDevice[i]);
          }
       }
       rcu_read_unlock();
 
-      netif_stop_queue(pGobiDev->mpNetDev->net);
+      gobi_netif_stop_queue(pGobiDev->mpNetDev->net);
       netif_carrier_off(pGobiDev->mpNetDev->net);
       wait_ms(500);
       DeleteQMUXNet(pGobiDev);
@@ -452,7 +465,6 @@ int work_function(void *data)
    #endif
    if (status != 0)
    {
-      StopQMUXNet(pGobiDev);
       // usbnet_disconnect() will call GobiNetDriverUnbind() which will call
       // DeregisterQMIDevice() to clean up any partially created QMI device
       if(pGobiDev->mbUnload >= eStatUnloading)
@@ -631,7 +643,7 @@ int GobiNetSuspend(
       This is required by modem on USB3.0 selective suspend */
    if ( pDev->udev->speed >= USB_SPEED_SUPER )
    {
-      nRet = Gobi_usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+      nRet = Gobi_usb_control_msg(pIntf,pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
                                USB_REQ_SET_FEATURE, USB_RECIP_INTERFACE,
                                USB_INTRF_FUNC_SUSPEND,
                                USB_INTRF_FUNC_SUSPEND_RW | USB_INTRF_FUNC_SUSPEND_LP |
@@ -644,7 +656,7 @@ int GobiNetSuspend(
    }
    #endif
    //USB/xhci: Enable remote wakeup for USB3 devices
-   nRet = Gobi_usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+   nRet = Gobi_usb_control_msg(pIntf,pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
                                USB_REQ_SET_FEATURE, USB_RECIP_DEVICE,
                                USB_DEVICE_REMOTE_WAKEUP,
                                0, //Don't care about which interface
@@ -977,14 +989,11 @@ static void GobiNetDriverUnbind(
        return ;
    }
    // Should already be down, but just in case...
-   netif_stop_queue(pDev->net);
+   gobi_netif_stop_queue(pDev->net);
    netif_carrier_off( pDev->net );
-   netif_stop_queue(pGobiDev->mpNetDev->net);
+   gobi_netif_stop_queue(pGobiDev->mpNetDev->net);
    netif_carrier_off(pGobiDev->mpNetDev->net);
-   #if LINUX_VERSION_CODE >= KERNEL_VERSION( 3,0,0 )
-   if (pDev->net->flags & IFF_UP)
-   dev_deactivate(pDev->net);
-   #endif
+   gobi_dev_deactivate(pDev->net);
 
    DeregisterQMIDevice( pGobiDev );
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,29 ))
@@ -1042,6 +1051,12 @@ struct sk_buff *GobiNetDriverTxFixup(
    #else
    DBG( "\n" );
    #endif
+   if(pGobiDev->iStoppingNetDev==1)
+   {
+      DBG( "Device Disconnecting\n" );
+      dev_kfree_skb_any(pSKB);
+      return NULL;
+   }
    if((pGobiDev->iQMUXEnable!=0)&&(pGobiDev->iIPAlias==0)&&iIsValidQmuxSKB(pSKB))
    {
      if((pSKB->data[0]==00)
@@ -2702,7 +2717,7 @@ int GobiUSBNetProbe(
       usb_set_intfdata(pIntf, NULL);
       return -ENXIO;
    }
-   usbnet_stop(pDev->net);
+   gobi_usbnet_stop(pDev->net);
    
    pGobiDev = kzalloc( sizeof( sGobiUSBNet ), GOBI_GFP_KERNEL );
    if (pGobiDev == NULL)
@@ -2840,6 +2855,7 @@ int GobiUSBNetProbe(
    GobiSetDownReason( pGobiDev, NO_NDIS_CONNECTION );
 #endif
    pGobiDev->iQMUXEnable = 0;
+   pGobiDev->iStoppingNetDev = 0;
    pGobiDev->nRmnet = 0;
    if(ifacenum==8)// only allow interface 8 to allow qmux
    {
@@ -2847,7 +2863,7 @@ int GobiUSBNetProbe(
       {
          int index=0;
          pGobiDev->iQMUXEnable = 1;
-         if (rtnl_trylock())
+         if (gobi_rtnl_trylock())
          {
             if (!netif_running(pDev->net)) 
             {
@@ -2956,7 +2972,8 @@ void GobiUSBDisconnect(struct usb_interface *pIntf)
        }
        pGobiDev->mbUnload = eStatUnloading;
    }
-   usbnet_stop(pDev->net);//IPV6 lock error
+   gobi_usbnet_stop(pDev->net);//IPV6 lock error
+   gobi_dev_deactivate(pDev->net);
    StopQMUXNet(pGobiDev);
    DestroyQMAPRxBuffer(pGobiDev);
    usbnet_disconnect(pIntf);
@@ -3103,7 +3120,7 @@ void SendWakeupControlMsg(
    #if defined(USB_INTRF_FUNC_SUSPEND) && defined(USB_INTRF_FUNC_SUSPEND_RW)
    if ( pDev->udev->speed >= USB_SPEED_SUPER )
    {
-      nRet = Gobi_usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+      nRet = Gobi_usb_control_msg(pIntf,pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
                                USB_REQ_SET_FEATURE, USB_RECIP_INTERFACE,
                                USB_INTRF_FUNC_SUSPEND,
                                pIntf->cur_altsetting->desc.bInterfaceNumber, /* two bytes in this field, suspend option(1 byte) | interface number(1 byte) */
@@ -3115,7 +3132,7 @@ void SendWakeupControlMsg(
    }
 #endif
    //USB/xhci: Enable remote wakeup for USB3 devices
-   nRet = Gobi_usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+   nRet = Gobi_usb_control_msg(pIntf,pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
                                          USB_REQ_CLEAR_FEATURE,
                                                  USB_RECIP_DEVICE,
                                          USB_DEVICE_REMOTE_WAKEUP, 
@@ -3128,7 +3145,7 @@ void SendWakeupControlMsg(
        DBG("[line:%d] send usb_control_msg failed!nRet = %d\n", __LINE__, nRet);
    }
    // 9x30(EM74xx) needs this when resume
-   nRet = Gobi_usb_control_msg( pDev->udev,
+   nRet = Gobi_usb_control_msg(pIntf, pDev->udev,
            usb_sndctrlpipe( pDev->udev, 0 ),
            SET_CONTROL_LINE_STATE_REQUEST,
            SET_CONTROL_LINE_STATE_REQUEST_TYPE,
@@ -3187,7 +3204,8 @@ PARAMETERS
    skb          [ I ] - SKB buffer
 
 RETURN VALUE:
-   NULL
+   int - 0 for success
+         1 for error
 ===========================================================================*/
 int gobi_dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
 {
@@ -3292,6 +3310,155 @@ int GobiUSBLockReset( struct usb_interface * pIntf )
    usb_reset_device(udev);
    usb_unlock_device(udev);
    return 0;
+}
+
+/*===========================================================================
+METHOD:
+   gobi_dev_deactivate (Private Method)
+
+DESCRIPTION:
+   Deactivate net device.
+
+PARAMETERS
+   dev          [ I ] - net device pointer
+
+RETURN VALUE:
+   NULL
+===========================================================================*/
+void gobi_dev_deactivate(struct net_device *dev)
+{
+   if (dev->flags & IFF_UP)
+   {
+      DBG("gobi_dev_deactivate\n");
+      if (!gobi_rtnl_trylock()) 
+      {
+         DBG("!gobi_rtnl_trylock\n");
+         return;
+      }
+      if (netif_carrier_ok(dev))
+      {
+         DBG("netif_carrier_off\n");
+         netif_carrier_off(dev);
+      }
+      DBG("netif_tx_stop_all_queues\n");
+      gobi_netif_stop_queue(dev);
+      #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,0,0 ))
+      DBG("dev_deactivate\n");
+      dev_deactivate(dev);
+      #endif
+      netdev_state_change(dev);
+      rtnl_unlock();
+   }
+}
+
+/*===========================================================================
+METHOD:
+   gobi_netif_stop_queue (Private Method)
+
+DESCRIPTION:
+   Stop all net device tx queue.
+
+PARAMETERS
+   dev          [ I ] - net device pointer
+
+RETURN VALUE:
+   NULL
+===========================================================================*/
+void gobi_netif_stop_queue(struct net_device *dev)
+{
+   netif_stop_queue(dev);
+   netif_tx_stop_all_queues(dev);
+}
+
+/*===========================================================================
+METHOD:
+   gobi_usbnet_stop (Private Method)
+
+DESCRIPTION:
+   Stop usbnet net deivce.
+
+PARAMETERS
+   dev          [ I ] - net device pointer
+
+RETURN VALUE:
+   NULL
+===========================================================================*/
+void gobi_usbnet_stop(struct net_device *dev)
+{
+   if(netif_running(dev))
+   {
+      DBG("gobi_usbnet_stop\n");
+      if (!gobi_rtnl_trylock()) 
+      {
+         DBG("!rtnl_trylock\n");
+         return;
+      }
+      if (netif_carrier_ok(dev))
+      {
+         DBG("netif_carrier_off\n");
+         netif_carrier_off(dev);
+      }
+      DBG("netif_tx_stop_all_queues\n");
+      gobi_netif_stop_queue(dev);
+      usbnet_stop(dev);
+      netdev_state_change(dev);
+      rtnl_unlock();
+   }
+}
+
+/*===========================================================================
+METHOD:
+   gobi_rtnl_trylock (Private Method)
+
+DESCRIPTION:
+   Stop usbnet net deivce.
+
+PARAMETERS
+   NULL
+
+RETURN VALUE:
+   int - 1 for success to lock
+         0 fail to lock
+===========================================================================*/
+int gobi_rtnl_trylock(void)
+{
+   int iCount= 0;
+   do
+   {
+      if (rtnl_trylock()) 
+      {
+         return 1;
+      }
+      wait_ms(100);
+   }while(iCount++<10);
+   return 0;
+}
+
+/*===========================================================================
+METHOD:
+   stop_virtual_netdev (Private Method)
+
+DESCRIPTION:
+   Stop virtual adaptor net device.
+
+PARAMETERS
+   dev          [ I ] - net device pointer
+
+RETURN VALUE:
+   NULL
+===========================================================================*/
+void stop_virtual_netdev(struct net_device *dev)
+{
+   if (!gobi_rtnl_trylock()) 
+   {
+      DBG("!rtnl_trylock\n");
+      return;
+   }
+   gobi_netif_stop_queue(dev);
+   netif_carrier_off(dev);
+   netif_stop_queue(dev);
+   netdev_state_change(dev);
+   rtnl_unlock();
 }
 
 module_exit( GobiUSBNetModExit );

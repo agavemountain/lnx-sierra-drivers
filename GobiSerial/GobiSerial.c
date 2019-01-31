@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2018-06-22/SWI_2.33"
+#define DRIVER_VERSION "2018-08-24/SWI_2.34"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -560,20 +560,46 @@ void GobiUSBSendZeroConfigMsg(struct usb_serial *serial)
 
 bool IsDeviceUnbinding(struct usb_serial *serial)
 {
+   struct usb_device *udev = NULL;
+   struct usb_interface *interface = NULL;
    DBG("\n");
-   if(!serial)
+   if((!serial)||
+      (!serial->interface) ||
+      (!serial->interface->cur_altsetting))
    {
       return false;
    }
-   if(!interface_to_usbdev(serial->interface))
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,33 ))
+   if(serial->interface->resetting_device)
    {
       return false;
    }
-   if (interface_to_usbdev(serial->interface)->state == USB_STATE_NOTATTACHED )
+   #endif
+   if (serial->num_ports < 1) 
    {
       return false;
    }
-   if(serial->interface->condition == USB_INTERFACE_UNBINDING)
+   interface = serial->interface;
+   if(!serial->dev)
+   {
+      return false;
+   }
+   udev = serial->dev;
+   if((!udev)||
+      (!udev->parent))
+   {
+      return false;
+   }
+   if ((udev->parent->state == USB_STATE_NOTATTACHED )||
+      (udev->state == USB_STATE_NOTATTACHED ))
+   {
+      return false;
+   }
+   if(interface->cur_altsetting->desc.bInterfaceNumber!=0)
+   {
+      return false;
+   }      
+   if(interface->condition == USB_INTERFACE_UNBINDING)
    {
       return true;
    }
@@ -585,9 +611,16 @@ static void Gobi_release(struct usb_serial *serial)
    int i;
    struct usb_serial_port *port;
    struct sierra_intf_private *intfdata = serial->private;
-
+   if(!serial)
+      return ;
+   if(!serial->dev)
+      return ;
    dev_dbg(&serial->dev->dev, "%s\n", __func__);
-
+   //Set USB CONFIGURATION to ZERO
+   if(IsDeviceUnbinding(serial))
+   {
+      GobiUSBSendZeroConfigMsg(serial);
+   }
    stop_read_write_urbs(serial);
 
    if (serial->num_ports > 0) {
@@ -613,11 +646,6 @@ static void Gobi_release(struct usb_serial *serial)
       usb_set_serial_port_data(port, NULL);
    }
    kfree(intfdata);
-   //Set USB CONFIGURATION to ZERO
-   if(IsDeviceUnbinding(serial))
-   {
-      GobiUSBSendZeroConfigMsg(serial);
-   }
 }
 
 /*=========================================================================*/
