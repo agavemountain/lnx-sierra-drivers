@@ -100,6 +100,8 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "Structs.h"
 #include "QMI.h"
 
+extern int debug;
+
 /*=========================================================================*/
 // Get sizes of buffers needed by QMI requests
 /*=========================================================================*/
@@ -1014,7 +1016,9 @@ int QMIWDASetDataFormatReq(
    put_unaligned( cpu_to_le16(0x0004), (u16 *)(pBuffer + sizeof( sQMUX ) + iIndex));
    iIndex+=2;
    // Datagram is set as 32768
-   put_unaligned( cpu_to_le32(0x00008000), (u32 *)(pBuffer + sizeof( sQMUX ) + iIndex));
+   put_unaligned( cpu_to_le32(QMAP_SIZE_OF_RX_BUFFER), (u32 *)(pBuffer + sizeof( sQMUX ) + iIndex));
+   DBG("Datagramsize:%d\n",QMAP_SIZE_OF_RX_BUFFER);
+
    iIndex+=4;
    uTotalTlvLength += 1+2+4;
    //End Tlv 0x16
@@ -1524,6 +1528,8 @@ PARAMETERS
    pBuffer         [ I ] - Buffer to be parsed
    buffSize        [ I ] - Size of pBuffer
    iDataMode       [ I ] - Data Mode
+   ULDatagram      [ I ] - Downlink Data Aggregation Max Datagrams
+   ULDatagramSize  [ I ] - Downlink Data Aggregation Max Size
 RETURN VALUE:
    int - 0 for success
          Negative errno for error
@@ -1531,7 +1537,9 @@ RETURN VALUE:
 int QMIWDASetDataFormatResp(
    void *   pBuffer,
    u16      buffSize,
-   int      iDataMode)
+   int      iDataMode,
+   u32 *    ULDatagram,
+   u32 *    ULDatagramSize)
 {
 
    int result;
@@ -1565,6 +1573,38 @@ int QMIWDASetDataFormatResp(
       return 0;
    }
 
+   if(ULDatagram!=NULL)
+   {
+      result = GetTLV( pBuffer, buffSize, 0x15, (void*)ULDatagram, 4 );
+      if (result != 4)
+      {
+         printk("FAIL: ULDatagram\n");
+      }
+      else
+      {
+         put_unaligned( le32_to_cpu(*ULDatagram), ULDatagram);
+         if(*ULDatagram>QMAP_SIZE_OF_RX_BUFFER)
+         {
+            printk("WARN: ULDatagram:%u\n",*ULDatagram); 
+         }
+      }
+   }
+   if(ULDatagramSize!=NULL)
+   {
+      result = GetTLV( pBuffer, buffSize, 0x16, (void*)ULDatagramSize, 4 );
+      if (result != 4)
+      {
+         printk("FAIL: ULDatagramSize\n"); 
+      }
+      else
+      {
+         put_unaligned( le32_to_cpu(*ULDatagramSize), ULDatagramSize);
+         if(*ULDatagramSize>QMAP_SIZE_OF_RX_BUFFER)
+         {
+            printk("WARN: ULDatagramSize:%u\n",*ULDatagramSize); 
+         }
+      }
+   }
    /* Check response message link protocol */
    result = GetTLV( pBuffer, buffSize, 0x11,
                      &pktLinkProtocol[0], 4);
@@ -2029,5 +2069,25 @@ int QMIWDASetDataFormatReqSettingsReq(
 
    // success
    return sizeof( sQMUX ) + 11;
+}
+
+
+void PrintIPV6Addr(ipv6_addr * addr)
+{   
+   if(debug & DEBUG_NETMASK)
+   {
+      char str[40];
+      snprintf(str,40,"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+      (int)addr->ipv6addr[0], (int)addr->ipv6addr[1],
+      (int)addr->ipv6addr[2], (int)addr->ipv6addr[3],
+      (int)addr->ipv6addr[4], (int)addr->ipv6addr[5],
+      (int)addr->ipv6addr[6], (int)addr->ipv6addr[7],
+      (int)addr->ipv6addr[8], (int)addr->ipv6addr[9],
+      (int)addr->ipv6addr[10], (int)addr->ipv6addr[11],
+      (int)addr->ipv6addr[12], (int)addr->ipv6addr[13],
+      (int)addr->ipv6addr[14], (int)addr->ipv6addr[15]);
+      NETDBG("IPv6 Addr:%s\n",str);
+      return ;
+   }
 }
 

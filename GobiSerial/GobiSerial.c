@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-08-18/SWI_2.29"
+#define DRIVER_VERSION "2017-10-30/SWI_2.30"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -291,8 +291,6 @@ static struct usb_device_id GobiVIDPIDTable[] =
       /* blacklist the interface */
       .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
-
-   /* Sierra Wireless QMI MC75xx/EM75xx QMI*/
    { USB_DEVICE(0x1199, 0x9091),
       /* blacklist the interface */
       .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
@@ -302,6 +300,14 @@ static struct usb_device_id GobiVIDPIDTable[] =
       .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
    { USB_DEVICE(0x1199, 0x90b1),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+   { USB_DEVICE(0x1199, 0x90c0),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+   { USB_DEVICE(0x1199, 0x90c1),
       /* blacklist the interface */
       .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
