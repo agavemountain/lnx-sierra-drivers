@@ -200,6 +200,10 @@ void ReadCallback( struct urb * pReadURB );
 //    Data is available, start a read URB
 void IntCallback( struct urb * pIntURB );
 
+
+// ReadCallback Intrrupt routine
+void ReadCallbackInt( struct urb * pReadURB );
+
 // Start continuous read "thread"
 int StartRead( sGobiUSBNet * pDev );
 
@@ -462,7 +466,7 @@ int ReleaseNotifyList(sGobiUSBNet *pDev,u16 clientID,u8 transactionID);
 int gobi_kthread_should_stop(void);
 
 // 
-int Gobi_usb_control_msg(struct usb_device *dev, unsigned int pipe, __u8 request,
+int Gobi_usb_control_msg(struct usb_interface *intf, struct usb_device *dev, unsigned int pipe, __u8 request,
                      __u8 requesttype, __u16 value, __u16 index, void *data,
                       __u16 size, int timeout);
 

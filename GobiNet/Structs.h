@@ -525,6 +525,7 @@ typedef struct sGobiUSBNet
    int iUSBState;
    int iDeviceMuxID;
    int iQMUXEnable;
+   int iStoppingNetDev;
    int nRmnet;
    int iMaxMuxID;
    int iPacketInComplete;
@@ -544,6 +545,12 @@ typedef struct sGobiUSBNet
     */
    struct workqueue_struct *wq;
    struct delayed_work dw;
+   /*
+    * Workqueue and Delaywork to Process Interrupt URB.
+    */
+   struct workqueue_struct *wqProcessReadCallback;
+   struct delayed_work dwProcessReadCallback;
+   struct urb *pReadURB;
 } sGobiUSBNet;
 
 /*=========================================================================*/
