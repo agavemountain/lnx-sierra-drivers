@@ -310,6 +310,7 @@ typedef struct sQMIDev
    /* Spinlock for client Memory entries */
    spinlock_t                 mClientMemLock;
    unsigned long              mFlag;
+   struct task_struct         *pTask;
     /* semaphore for Notify */
    struct semaphore           mNotifyMemLock;
 
@@ -453,6 +454,7 @@ typedef struct sGobiUSBNet
    int iDataMode;
    struct mutex urb_lock;
    struct mutex notif_lock;
+   int iUSBState;
 } sGobiUSBNet;
 
 /*=========================================================================*/
@@ -476,6 +478,9 @@ typedef struct sQMIFilpStorage
    int                    iReadSyncResult;
    int                    iInfNum;
    struct task_struct     *pOpenTask;
+   struct task_struct     *pReadTask;
+   struct task_struct     *pWriteTask;
+   struct task_struct     *pIOCTLTask;
    int                    iCount;
 } sQMIFilpStorage;
 

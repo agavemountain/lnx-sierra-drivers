@@ -405,7 +405,7 @@ int QMIDMSGetMEID( sGobiUSBNet * pDev );
 int QMIDMSSWISetFCCAuth( sGobiUSBNet * pDev );
 
 // Register client, send req and parse Data format response, release client
-int QMIWDASetDataFormat( sGobiUSBNet * pDev, bool te_flow_control );
+int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control );
 
 // send req and parse Data format response
 int QMICTLSetDataFormat( sGobiUSBNet * pDev );
@@ -434,8 +434,7 @@ int UserSpaceLock(struct file *filp, int cmd, struct file_lock *fl);
 void gobi_flush_work(void);
 
 // Close Opened File Inode
-void CloseFileInode(sGobiUSBNet * pDev,int iCount);
-
+int CloseFileInode(sGobiUSBNet * pDev,int iCount);
 // Set modem in specific power save mode
 int SetPowerSaveMode(sGobiUSBNet *pDev,u8 mode);
 
@@ -455,4 +454,28 @@ int Gobi_usb_control_msg(struct usb_device *dev, unsigned int pipe, __u8 request
                       __u16 size, int timeout);
 
 int AddClientToMemoryList(sGobiUSBNet *pDev,u16 clientID);
+
+static inline int IsInterfacefDisconnected(struct usb_interface *intf)
+{
+   if(!interface_to_usbdev(intf))
+      return 1;
+   if (interface_to_usbdev(intf)->state == USB_STATE_NOTATTACHED )
+   {
+      return 1;
+   }
+   return 0;
+}
+
+static inline int gobi_usb_autopm_get_interface(struct usb_interface *intf)
+{
+   if(IsInterfacefDisconnected(intf))
+   {
+      return -ENXIO;
+   }
+   return usb_autopm_get_interface(intf);
+}
+void gobi_usb_autopm_put_interface(struct usb_interface *intf);
+void gobi_usb_autopm_get_interface_no_resume(struct usb_interface *intf);
+int gobi_usb_autopm_get_interface_async(struct usb_interface *intf);
+void gobi_usb_autopm_put_interface_async(struct usb_interface *intf);
 

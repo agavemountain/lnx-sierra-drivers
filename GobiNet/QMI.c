@@ -233,19 +233,22 @@ DESCRIPTION:
 
 PARAMETERS
    te_flow_control [ I ] - TE Flow Control Flag
+                          - eSKIP_TE_FLOW_CONTROL_TLV - Not Set TE Flow control.
+                          - eTE_FLOW_CONTROL_TLV_0 - Set TE Flow Control disabled.
+                          - eTE_FLOW_CONTROL_TLV_1 - Set TE Flow Control enabled.
 
 RETURN VALUE:
    u16 - size of buffer
 ===========================================================================*/
-u16 QMIWDASetDataFormatReqSize( bool te_flow_control )
+u16 QMIWDASetDataFormatReqSize( int te_flow_control )
 {
-   if(te_flow_control)
+   if(te_flow_control!=eSKIP_TE_FLOW_CONTROL_TLV)
    {
       return sizeof( sQMUX ) + 29; /* TE_FLOW_CONTROL */
    }
    else
    {
-       return sizeof( sQMUX ) + 25;
+      return sizeof( sQMUX ) + 25;
    }
 }
 
@@ -842,7 +845,7 @@ int QMIWDASetDataFormatReq(
    void *   pBuffer,
    u16      buffSize,
    u16      transactionID,
-   bool     te_flow_control,
+   int     te_flow_control,
    int      iDataMode)
 {
    if (pBuffer == 0 || buffSize < QMIWDASetDataFormatReqSize(te_flow_control) )
@@ -861,7 +864,7 @@ int QMIWDASetDataFormatReq(
    put_unaligned( cpu_to_le16(0x0020), (u16 *)(pBuffer + sizeof( sQMUX ) + 3) );
 
    // Size of TLV's
-   if(te_flow_control)
+   if(te_flow_control!=eSKIP_TE_FLOW_CONTROL_TLV)
    {
       /* TE_FLOW_CONTROL */
       put_unaligned( cpu_to_le16(0x0016), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
@@ -910,16 +913,23 @@ int QMIWDASetDataFormatReq(
    /* TLV Data */
    put_unaligned( cpu_to_le32(0x00000000), (u32 *)(pBuffer + sizeof( sQMUX ) + 21));
 
-   if(te_flow_control)
+   if(te_flow_control!=eSKIP_TE_FLOW_CONTROL_TLV)
    {
-   /* TLVType Flow Control - 1 byte */
-   *(u8 *)(pBuffer + sizeof( sQMUX ) + 25) = 0x1A;
+      /* TLVType Flow Control - 1 byte */
+      *(u8 *)(pBuffer + sizeof( sQMUX ) + 25) = 0x1A;
 
-   /* TLVLength 2 bytes */
-   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 26));
+      /* TLVLength 2 bytes */
+      put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 26));
 
-   /* Flow Control: 0 - not done by TE; 1 - done by TE  1 byte */
-   *(u8 *)(pBuffer + sizeof( sQMUX ) + 28) = 1; /* flow control done by TE */
+      /* Flow Control: 0 - not done by TE; 1 - done by TE  1 byte */
+      if(te_flow_control==eTE_FLOW_CONTROL_TLV_0)
+      {
+         *(u8 *)(pBuffer + sizeof( sQMUX ) + 28) = 0; /* flow control done by TE */
+      }
+      else
+      {
+         *(u8 *)(pBuffer + sizeof( sQMUX ) + 28) = 1; /* flow control done by TE */
+      }
    
    } /* TE_FLOW_CONTROL */
 

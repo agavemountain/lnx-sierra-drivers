@@ -121,13 +121,17 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 // Probe one device at the time when set to "1"
 //-----------------------------------------------------------------------------
+#ifdef CONFIG_ANDROID
+#define _PROBE_LOCK_ 1
+#else
 #define _PROBE_LOCK_ 0
+#endif
 //-----------------------------------------------------------------------------
 // Definitions
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-05-19/SWI_2.43"
+#define DRIVER_VERSION "2017-07-06/SWI_2.44"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -147,7 +151,7 @@ int iModuleExit=0;
 /*
  * enable/disable TE flow control
  */
-int iTEEnable=0;
+int iTEEnable=-1;
 /*
  * Is RAW IP RAW
  */
@@ -218,7 +222,7 @@ int GobiUSBNetStop( struct net_device * pNet );
 int GobiUSBNetChangeMTU(struct net_device *netdev, int new_mtu);
 #endif
 static int GobiNetDriverLteRxFixup(struct usbnet *dev, struct sk_buff *skb);
-void SendWeakupControlMsg(
+void SendWakeupControlMsg(
    struct usb_interface * pIntf,
    int oldPowerState);
 
@@ -353,7 +357,6 @@ void StopTask(sGobiUSBNet *pDev)
    return ;
 }
 
-#define _PROBE_LOCK_ 0
 int thread_function(void *data)
 {
 
@@ -363,7 +366,8 @@ int thread_function(void *data)
    struct usb_device *dev = NULL;
    
    #if _PROBE_LOCK_
-   while(!down_trylock( &taskLoading ))
+   int i = 0;
+   while(0!=down_trylock( &taskLoading ))
    {
      if((kthread_should_stop())||
         signal_pending(current))
@@ -457,6 +461,9 @@ int thread_function(void *data)
          pGobiDev->iTaskID = -1;
       }
    }
+   #if _PROBE_LOCK_
+   up(&taskLoading);
+   #endif
    if (status != 0)
    {
       // usbnet_disconnect() will call GobiNetDriverUnbind() which will call
@@ -505,9 +512,6 @@ int thread_function(void *data)
          usb_reset_device(udev);
       }
    }
-   #if _PROBE_LOCK_
-   up(&taskLoading);
-   #endif
    
    return 0;
 
@@ -730,7 +734,7 @@ int GobiNetResume( struct usb_interface * pIntf )
 #endif
 
 
-   SendWeakupControlMsg(pIntf,oldPowerState);
+   SendWakeupControlMsg(pIntf,oldPowerState);
    /* Run usbnet's resume function so that the kernel spin lock counter keeps balance */
    nRet = usbnet_resume( pIntf );
    if (nRet != 0)
@@ -793,9 +797,9 @@ int GobiNetResetResume( struct usb_interface * pIntf )
 void UsbAutopmGetInterface(struct usb_interface * intf)
 {
    #if (LINUX_VERSION_CODE < KERNEL_VERSION( 3,0,0 ))
-   usb_autopm_get_interface_async(intf);
+   gobi_usb_autopm_get_interface_async(intf);
    #else
-   usb_autopm_get_interface_no_resume(intf); 
+   gobi_usb_autopm_get_interface_no_resume(intf); 
    #endif
 }
 
@@ -1031,7 +1035,7 @@ struct sk_buff *GobiNetDriverTxFixup(
    {
       DBG("Suspended\n");
       UsbAutopmGetInterface( pGobiDev->mpIntf );
-      usb_autopm_put_interface( pGobiDev->mpIntf );
+      gobi_usb_autopm_put_interface( pGobiDev->mpIntf );
    }
    #else
    DBG( "\n" );
@@ -1115,7 +1119,7 @@ static int GobiNetDriverRxFixup(
    {
       DBG("Suspended\n");
       UsbAutopmGetInterface( pGobiDev->mpIntf );
-      usb_autopm_put_interface( pGobiDev->mpIntf );
+      gobi_usb_autopm_put_interface( pGobiDev->mpIntf );
     }
     #endif
    if(pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)
@@ -1406,7 +1410,7 @@ static int GobiUSBNetAutoPMThread( void * pData )
          spin_unlock_irqrestore( &pAutoPM->mActiveURBLock, activeURBflags );
 
          // URB is done, decrement the Auto PM usage count
-         usb_autopm_put_interface( pAutoPM->mpIntf );
+         gobi_usb_autopm_put_interface( pAutoPM->mpIntf );
 
          // Lock ActiveURB again
          spin_lock_irqsave( &pAutoPM->mActiveURBLock, activeURBflags );
@@ -1440,7 +1444,7 @@ static int GobiUSBNetAutoPMThread( void * pData )
       spin_unlock_irqrestore( &pAutoPM->mActiveURBLock, activeURBflags );
 
       // Tell autopm core we need device woken up
-      status = usb_autopm_get_interface( pAutoPM->mpIntf );
+      status = gobi_usb_autopm_get_interface( pAutoPM->mpIntf );
       if (status < 0)
       {
          DBG( "unable to autoresume interface: %d\n", status );
@@ -1479,7 +1483,7 @@ static int GobiUSBNetAutoPMThread( void * pData )
          usb_free_urb( pAutoPM->mpActiveURB );
          pAutoPM->mpActiveURB = NULL;
          spin_unlock_irqrestore( &pAutoPM->mActiveURBLock, activeURBflags );
-         usb_autopm_put_interface( pAutoPM->mpIntf );
+         gobi_usb_autopm_put_interface( pAutoPM->mpIntf );
 
          // Loop again
          complete( &pAutoPM->mThreadDoWork );
@@ -1755,6 +1759,9 @@ int GobiUSBNetOpen( struct net_device * pNet )
    }
    else
    {
+      #ifdef CONFIG_ANDROID // To prevnet packet traffic before data connection start.
+      GobiClearDownReason( pGobiDev, NET_IFACE_STOPPED );
+      #endif
       GobiSetDownReason( pGobiDev, NO_NDIS_CONNECTION );
    }
 
@@ -1767,9 +1774,9 @@ int GobiUSBNetOpen( struct net_device * pNet )
       if (status == 0)
       {
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
-         usb_autopm_enable( pGobiDev->mpIntf );
+         gobi_usb_autopm_enable( pGobiDev->mpIntf );
 #else
-         usb_autopm_put_interface( pGobiDev->mpIntf );
+         gobi_usb_autopm_put_interface( pGobiDev->mpIntf );
 #endif
       }
 #endif /* CONFIG_PM */
@@ -1975,7 +1982,7 @@ static int GobiNetDriverLteRxFixup(struct usbnet *dev, struct sk_buff *skb)
    {
       DBG("Suspended\n");
       UsbAutopmGetInterface( pGobiDev->mpIntf );
-      usb_autopm_put_interface( pGobiDev->mpIntf );
+      gobi_usb_autopm_put_interface( pGobiDev->mpIntf );
    }
    #endif
    if(pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)
@@ -2274,7 +2281,7 @@ int GobiUSBNetProbe(
       usb_set_intfdata(pIntf, NULL);
       return -ENXIO;
    }
-
+   usbnet_stop(pDev->net);
    pGobiDev = kzalloc( sizeof( sGobiUSBNet ), GFP_KERNEL );
    if (pGobiDev == NULL)
    {
@@ -2288,7 +2295,7 @@ int GobiUSBNetProbe(
    pGobiDev->WDSClientID = (u16)-1;
    pGobiDev->iDataMode = eDataMode_Ethernet;
    pDev->data[0] = (unsigned long)pGobiDev;
-
+   pGobiDev->iUSBState = USB_STATE_ATTACHED;
    pGobiDev->mpNetDev = pDev;
 
    // Clearing endpoint halt is a magic handshake that brings 
@@ -2564,7 +2571,7 @@ static void __exit GobiUSBNetModExit( void )
 
 /*===========================================================================
 METHOD:
-   SendWeakupControlMsg (Private Method)
+   SendWakeupControlMsg (Private Method)
 
 DESCRIPTION:
    Send Devie Weak Up Message
@@ -2576,7 +2583,7 @@ PARAMETERS
 RETURN VALUE:
    NULL
 ===========================================================================*/
-void SendWeakupControlMsg(
+void SendWakeupControlMsg(
    struct usb_interface * pIntf,
    int oldPowerState)
 {
@@ -2671,6 +2678,6 @@ module_param( txQueueLength, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( txQueueLength, 
                   "Number of IP packets which may be queued up for transmit" );
 module_param( iTEEnable, int, S_IRUGO | S_IWUSR );
-MODULE_PARM_DESC( iTEEnable, "TE Flow Control enabled or not" );
+MODULE_PARM_DESC( iTEEnable, "-1 : Ignore TE flow Control, 0 : TE Flow Control disabled, 1 : TE Flow Control enabled" );
 module_param( iRAWIPEnable, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( iRAWIPEnable, "RAWIP enabled or not" );
