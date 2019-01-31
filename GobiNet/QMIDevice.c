@@ -3255,6 +3255,20 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    if (is9x15)
    {
        result = QMIWDASetDataFormat (pDev);
+       if((result != 0) && (iTEEnable==1))
+       {
+            iTEEnable = 0; //Disable TE
+            result = QMIWDASetDataFormat (pDev);
+       }
+
+       if(iTEEnable)
+       {
+           printk("TE Enabled\n");
+       }
+       else
+       {
+           printk("TE Disabled\n");
+       }
    }
    else
    {
@@ -3496,7 +3510,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
                   }
                }
             }
-            spin_unlock_irqrestore( &pEachTask->files->file_lock, flags );
+                    spin_unlock_irqrestore( &pEachTask->files->file_lock, flags );
          }
          rcu_read_unlock();
       }

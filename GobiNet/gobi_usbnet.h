@@ -25,16 +25,22 @@ int gobi_usbnet_start_xmit_2_6_32 (struct sk_buff *skb, struct net_device *net);
 #elif (LINUX_VERSION_CODE == KERNEL_VERSION( 2,6,35 ))
 void gobi_usbnet_tx_timeout_2_6_35 (struct net_device *net);
 netdev_tx_t gobi_usbnet_start_xmit_2_6_35 (struct sk_buff *skb,
-				     struct net_device *net);
+                     struct net_device *net);
 #elif (LINUX_VERSION_CODE == KERNEL_VERSION( 3,0,6 ))
 void gobi_usbnet_tx_timeout_3_0_6 (struct net_device *net);
 netdev_tx_t gobi_usbnet_start_xmit_3_0_6 (struct sk_buff *skb,
-				     struct net_device *net);
+                     struct net_device *net);
 #elif (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,10,1 ) &&\
        LINUX_VERSION_CODE <= KERNEL_VERSION( 3,10,39 ))
 void gobi_usbnet_tx_timeout_3_10_21 (struct net_device *net);
 netdev_tx_t gobi_usbnet_start_xmit_3_10_21 (struct sk_buff *skb,
-				     struct net_device *net);
+                     struct net_device *net);
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,12,0 ) &&\
+       LINUX_VERSION_CODE < KERNEL_VERSION( 3,13,0 ))
+void gobi_usbnet_tx_timeout_3_12_xx(struct net_device *net);
+netdev_tx_t gobi_usbnet_start_xmit_3_12_xx (struct sk_buff *skb,
+                     struct net_device *net);
+
 #else
 #endif
 

@@ -236,7 +236,14 @@ RETURN VALUE:
 ===========================================================================*/
 u16 QMIWDASetDataFormatReqSize( void )
 {
-   return sizeof( sQMUX ) + 25;
+   if(iTEEnable)
+   {
+      return sizeof( sQMUX ) + 29; /* TE_FLOW_CONTROL */
+   }
+   else
+   {
+       return sizeof( sQMUX ) + 25;
+   }
 }
 
 /*===========================================================================
@@ -848,7 +855,16 @@ int QMIWDASetDataFormatReq(
    put_unaligned( cpu_to_le16(0x0020), (u16 *)(pBuffer + sizeof( sQMUX ) + 3) );
 
    // Size of TLV's
-   put_unaligned( cpu_to_le16(0x0012), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+   if(iTEEnable)
+   {
+      /* TE_FLOW_CONTROL */
+      put_unaligned( cpu_to_le16(0x0016), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+   }
+   else
+   {
+      put_unaligned( cpu_to_le16(0x0012), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+   }
+ 
 
    /* TLVType QOS Data Format 1 byte  */
    *(u8 *)(pBuffer + sizeof( sQMUX ) +  7) = 0x10; // type data format
@@ -888,6 +904,18 @@ int QMIWDASetDataFormatReq(
 
    /* TLV Data */
    put_unaligned( cpu_to_le32(0x00000000), (u32 *)(pBuffer + sizeof( sQMUX ) + 21));
+
+   if(iTEEnable)
+   {
+   /* TLVType Flow Control - 1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 25) = 0x1A;
+
+   /* TLVLength 2 bytes */
+   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 26));
+
+   /* Flow Control: 0 - not done by TE; 1 - done by TE  1 byte */
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 28) = 1; /* flow control done by TE */
+   } /* TE_FLOW_CONTROL */
 
    // success
    return QMIWDASetDataFormatReqSize();
