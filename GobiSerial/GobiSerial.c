@@ -89,7 +89,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2015-01-23/SWI_2.22"
+#define DRIVER_VERSION "2015-03-09/SWI_2.23"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -244,6 +244,12 @@ static struct usb_device_id GobiVIDPIDTable[] =
 
    /* Sierra Wireless QMI MC74xx/EM74xx */
    { USB_DEVICE(0x1199, 0x9071),
+      /* blacklist the interface 1,4,5,6, 12 and 13 for AR7 */
+      .driver_info = BIT(1) | BIT(4) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+
+   /* Sierra Wireless QMI MC74xx/EM74xx */
+   { USB_DEVICE(0x1199, 0x9070),
       /* blacklist the interface 1,4,5,6, 12 and 13 for AR7 */
       .driver_info = BIT(1) | BIT(4) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
@@ -670,6 +676,7 @@ bool IsGPSPort(struct usb_serial_port *   pPort )
       case 0x68C0:
       case 0x9041:
       case 0x9071:
+      case 0x9070:
          if (pPort->serial->interface->cur_altsetting->desc.bInterfaceNumber == 2)
             return true;
          break;
@@ -1249,7 +1256,7 @@ static int __init GobiInit( void )
    printk( KERN_INFO "%s: %s\n", DRIVER_DESC, DRIVER_VERSION );
 
 #else
-#if (LINUX_VERSION_CODE > KERNEL_VERSION( 3,5,0 ))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,5,0 ))
    nRetval = usb_serial_register_drivers(serial_drivers, KBUILD_MODNAME, GobiVIDPIDTable);
 #else
    nRetval = usb_serial_register_drivers(&GobiDriver, serial_drivers);
@@ -1283,7 +1290,7 @@ static void __exit GobiExit( void )
    usb_deregister( &GobiDriver );
    usb_serial_deregister( &gGobiDevice );
 #else
-#if (LINUX_VERSION_CODE > KERNEL_VERSION( 3,5,0 ))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,5,0 ))
    usb_serial_deregister_drivers(serial_drivers);
 #else
    usb_serial_deregister_drivers(&GobiDriver, serial_drivers);
@@ -1300,10 +1307,10 @@ MODULE_AUTHOR( DRIVER_AUTHOR );
 MODULE_DESCRIPTION( DRIVER_DESC );
 MODULE_LICENSE( "Dual BSD/GPL" );
 
-module_param( debug, bool, S_IRUGO | S_IWUSR );
+module_param( debug, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( debug, "Debug enabled or not" );
-module_param( flow_control, bool, S_IRUGO | S_IWUSR );
+module_param( flow_control, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( flow_control, "flow control enabled or not" );
-module_param( ignore_gps_start_error, bool, S_IRUGO | S_IWUSR );
+module_param( ignore_gps_start_error, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( ignore_gps_start_error, 
    "allow port open to success even when GPS control message failed");

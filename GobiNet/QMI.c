@@ -1435,14 +1435,14 @@ int QMIWDASetDataFormatResp(
    if (pktLinkProtocol[0] != 2)
    {
       DBG("EFAULT: Data Format Cannot be set to RawIP Mode\n"); 
-      return 0;
+      return -EFAULT;
    }
    DBG("Data Format Set to RawIP\n");
 #else
    if (pktLinkProtocol[0] != 1)
    {
       DBG("EFAULT: Data Format Cannot be set to Ethernet Mode\n"); 
-      return 0;
+      return -EFAULT;
    }
    DBG("Data Format Set to Ethernet Mode \n");
 #endif
