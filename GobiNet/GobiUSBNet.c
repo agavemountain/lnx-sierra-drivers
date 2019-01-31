@@ -137,7 +137,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-08-22/SWI_2.45.1"
+#define DRIVER_VERSION "2017-09-05/SWI_2.46"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -160,6 +160,7 @@ int iModuleExit=0;
 int iTEEnable=-1;
 int iQMAPEnable=-1;
 int iMaxQMUXSupported=-1;
+int iAddETHMUXID=1;
 /*
  * Is RAW IP RAW
  */
@@ -250,7 +251,7 @@ void DeleteQMUXNet(sGobiUSBNet * pGobiDev)
    #endif
    if(pGobiDev->iQMUXEnable!=0)
    {
-      int i=0;
+      // int i=0;
       netif_stop_queue(pGobiDev->mpNetDev->net);
       netif_carrier_off(pGobiDev->mpNetDev->net);
       usbnet_stop(pGobiDev->mpNetDev->net);
@@ -263,11 +264,14 @@ void DeleteQMUXNet(sGobiUSBNet * pGobiDev)
          restart_syscall();
          return;
       }
+      /* comment out virtual adaptor unregister code */
+      #if 0
       for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
       {
          if(pGobiDev->pNetDevice[i]!=NULL)
          gobi_qmimux_unregister_device(pGobiDev->pNetDevice[i]);
       }
+      #endif
       rtnl_unlock();
       netif_stop_queue(pGobiDev->mpNetDev->net);
       netif_carrier_off(pGobiDev->mpNetDev->net);
@@ -895,6 +899,41 @@ static bool possibly_iphdr(const char *data)
    return (data[0] & 0xd0) == 0x40;
 }
 
+u8 retrieveMuxID(struct sk_buff *skb, sGobiUSBNet *pGobiNet)
+{
+   u8 muxId = 0+MUX_ID_START;
+   unsigned int ipAddress = 0;
+   int i;
+   
+   switch (skb->data[0] & 0xf0) 
+   {
+      case 0x40:
+      {
+         ipAddress = ntohl(((qmap_ipv4_header_t)(skb->data))->src_address);
+         PrintIPAddr("Packet src IP address : ",  ipAddress);
+
+         for ( i = 0; i < MAX_MUX_NUMBER_SUPPORTED; i++ )
+         {
+            if ( ipAddress == pGobiNet->qMuxIPTable[i].ipAddress )
+            {
+               muxId += pGobiNet->qMuxIPTable[i].instance;
+               DBG("Mux ID found : 0x%02x\n",  muxId);
+            }
+         }
+         break;
+      }
+      case 0x60:
+      {
+         break;
+      }
+      default :
+      {
+         return muxId;
+      }
+   }
+   return muxId;
+}
+
 /*===========================================================================
 METHOD:
    GobiNetDriverBind (Public Method)
@@ -1138,6 +1177,31 @@ struct sk_buff *GobiNetDriverTxFixup(
          return pSKB;
       }
    }
+   else if(pGobiDev->iQMUXEnable!=0)
+   {
+      if((iAddETHMUXID!=0)&&(pSKB->len > ETH_HLEN))
+      {
+         struct gobi_qmimux_hdr *hdr;
+         unsigned int len = 0;
+         unsigned short muxId;
+
+         skb_pull(pSKB, ETH_HLEN);
+         skb_reset_mac_header(pSKB);
+         skb_reset_network_header(pSKB);
+         skb_reset_transport_header(pSKB);
+
+         muxId = retrieveMuxID(pSKB, pGobiDev);
+
+         hdr = (struct gobi_qmimux_hdr *)skb_push(pSKB, sizeof(struct gobi_qmimux_hdr));
+         len = pSKB->len - sizeof(struct gobi_qmimux_hdr);
+         hdr->pad = 0;
+         hdr->mux_id = muxId;
+         hdr->pkt_len = cpu_to_be16(len);
+         DBG( "QMUX ETH 0x%02x\n", muxId);
+         PrintHex (pSKB->data, pSKB->len);
+         return pSKB;
+      }
+   }
    if((pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)&&(pGobiDev->iQMUXEnable==0))
    {
       DBG( "Dropped Packet : Not Connected\n" );
@@ -1223,7 +1287,8 @@ static int GobiNetDriverRxFixup(
     }
     #endif
     if((pGobiDev->iQMUXEnable!=0)&&
-        iIsValidQmuxSKB(pSKB))
+        iIsValidQmuxSKB(pSKB) &&
+        (iAddETHMUXID==0))
    {
       u32 length = pSKB->data[2];
       length = (length<<8) + pSKB->data[3];
@@ -1238,6 +1303,13 @@ static int GobiNetDriverRxFixup(
          skb_pull(pSKB,QMUX_HEADER_LENGTH);
          //DBG( "Remove MuxID From Modem modified: ");
          //PrintHex (pSKB->data, pSKB->len);
+      }
+   }
+   else if(pGobiDev->iQMUXEnable!=0)
+   {
+      if(iAddETHMUXID!=0)
+      {
+         skb_pull(pSKB,QMUX_HEADER_LENGTH);
       }
    }
    else if(pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)
@@ -2431,11 +2503,11 @@ int GobiUSBNetProbe(
             }
             if(iNumberOfMUXIDSupported<=0)
             {
-                printk( KERN_INFO "No QMAP RMNET is supported");
+                printk( KERN_INFO "QMAP Disabled");
             }
             else
             {
-               DBG("Number of RMNET supported %d\n", iNumberOfMUXIDSupported );
+               DBG("QMAP Enabled, number of RMNET supported : %d\n", iNumberOfMUXIDSupported );
             }
          }
       }
@@ -2623,7 +2695,7 @@ int GobiUSBNetProbe(
    {
       if((iQMAPEnable!=0)&&(iNumberOfMUXIDSupported>0)) 
       {
-         int iMuxID=0;
+         // int iMuxID=0;
          int index=0;
          pGobiDev->iQMUXEnable = 1;
          if (rtnl_trylock())
@@ -2650,10 +2722,13 @@ int GobiUSBNetProbe(
                   pGobiDev->iMaxMuxID = iNumberOfMUXIDSupported;
                }
                pGobiDev->nRmnet = pGobiDev->iMaxMuxID;
+               /* comment out virtual adaptor register code */
+               #if 0
                for(iMuxID=MUX_ID_START;iMuxID<(pGobiDev->iMaxMuxID+MUX_ID_START);iMuxID++)
                {
                   pGobiDev->pNetDevice[iMuxID-MUX_ID_START] = gobi_qmimux_register_device(pDev->net,index,iMuxID);
                }
+               #endif
             }
             else
             {
@@ -2971,6 +3046,8 @@ int gobi_dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
    else
    {
       DBG( "NET_RX_SUCCESS\n" );
+      dev->stats.rx_packets++;
+      dev->stats.rx_bytes+= skb->len;
    }
    return 0;
 }
@@ -3004,7 +3081,8 @@ MODULE_PARM_DESC( iQMAPEnable, "-1: Auto, 0 : QMAP disabled, 1 : QMAP enabled" )
 module_param( iQMAPEnable, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( iQMAPEnable, "QMAP enabled or not" );
 
-MODULE_PARM_DESC( iMaxQMUXSupported, "0 : Auto" );
 module_param( iMaxQMUXSupported, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( iMaxQMUXSupported, "-1: Auto, Max QMUX instance support" );
 
+module_param( iAddETHMUXID, int, S_IRUGO | S_IWUSR );
+MODULE_PARM_DESC( iAddETHMUXID, "-1: Auto, Add MuxID into Ethernet Adaptor" );

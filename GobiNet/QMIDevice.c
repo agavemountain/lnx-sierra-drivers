@@ -228,6 +228,7 @@ void gobi_try_wake_up_process(struct task_struct * pTask);
 #define IOCTL_QMI_GET_USBNET_STATS 0x8BE0 + 13
 #define IOCTL_QMI_SET_DEVICE_MTU 0x8BE0 + 14
 #define IOCTL_QMI_GET_QMAP_SUPPORT 0x8BE0 + 15
+#define IOCTL_QMI_SET_IP_ADDRESS   0x8BE0 + 16
 
 // CDC GET_ENCAPSULATED_RESPONSE packet
 #define CDC_GET_ENCAPSULATED_RESPONSE_LE 0x01A1ll
@@ -275,11 +276,6 @@ const int i = 1;
 #ifndef netdev_tx_t
 #define netdev_tx_t int
 #endif
-struct gobi_qmimux_hdr {
-   u8 pad;
-   u8 mux_id;
-   __be16 pkt_len;
-};
 
 static int gobi_qmimux_open(struct net_device *dev)
 {
@@ -3804,10 +3800,35 @@ long UserspaceunlockedIOCTL(
             {
                DBG( "Copy to userspace failure %d\n", result );
             }
-			DBG( "nRmnet:%d\n",(int)pDev->nRmnet);
+            DBG( "nRmnet:%d\n",(int)pDev->nRmnet);
             return result;
           }
-
+         case IOCTL_QMI_SET_IP_ADDRESS:
+         {
+            sGobiUSBNet *pDev = pFilpData->mpDev;
+            sQMuxIPTable *pTable = (sQMuxIPTable*)arg;
+            if (arg == 0)
+            {
+               DBG( "Bad IP Table IOCTL buffer\n" );
+               return -EINVAL;
+            }
+            if ( pTable->ipAddress == 0 )
+            {
+            /* a little bit difference between sQMuxIPTable and arg, arg passed from user space is mux id 
+               and ip address, but instance of sQMuxIPTable is the index from 0 to MAX_MUX_NUMBER_SUPPORTED-1,
+               so the difference is the MUX_ID_START offset */
+               pDev->qMuxIPTable[pTable->instance-MUX_ID_START].ipAddress = 0;
+               pDev->qMuxIPTable[pTable->instance-MUX_ID_START].instance = pTable->instance-MUX_ID_START;
+            }
+            else if ( pTable->ipAddress > 0 )
+            {
+               pDev->qMuxIPTable[pTable->instance-MUX_ID_START].instance = pTable->instance-MUX_ID_START;
+               pDev->qMuxIPTable[pTable->instance-MUX_ID_START].ipAddress= pTable->ipAddress;
+            }
+            DBG(" Set IP Address Mux ID : 0x%02x\n", pTable->instance);
+            PrintIPAddr( "Set IP Address : ", pTable->ipAddress);
+            return 0;
+         }
       default:
          return -EBADRQC;
    }
@@ -5827,7 +5848,13 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
          break;
       }
    }
-   
+
+   /* clear the qmux ip table */
+   for ( i = 0; i < MAX_MUX_NUMBER_SUPPORTED; i++)
+   {
+      pDev->qMuxIPTable[i].instance = 0;
+      pDev->qMuxIPTable[i].ipAddress = 0;
+   }
    // Stop all reads
    KillRead( pDev );
    wait_interrupt();

@@ -442,6 +442,17 @@ u16 GetTLV(
    return -ENOMSG;
 }
 
+void PrintIPAddr(char *msg, unsigned int addr)
+{
+   DBG("%s : %d.%d.%d.%d",
+        msg,
+        addr >> 24,
+        (addr >> 16) & 0xff,
+        (addr >> 8) & 0xff,
+        (addr ) & 0xff
+        );
+}
+
 /*===========================================================================
 METHOD:
    ValidQMIMessage (Public Method)
