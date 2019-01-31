@@ -367,7 +367,7 @@ int QMIDMSGetMEID( sGobiUSBNet * pDev );
 int QMIDMSSWISetFCCAuth( sGobiUSBNet * pDev );
 
 // Register client, send req and parse Data format response, release client
-int QMIWDASetDataFormat( sGobiUSBNet * pDev );
+int QMIWDASetDataFormat( sGobiUSBNet * pDev, bool te_flow_control );
 
 // send req and parse Data format response
 int QMICTLSetDataFormat( sGobiUSBNet * pDev );

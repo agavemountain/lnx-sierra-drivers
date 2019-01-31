@@ -101,13 +101,16 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 #endif
 
 #define BIT_9X15    (31)
-
+//-----------------------------------------------------------------------------
+// Probe one device at the time when set to "1"
+//-----------------------------------------------------------------------------
+#define _PROBE_LOCK_ 0
 //-----------------------------------------------------------------------------
 // Definitions
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2015-12-08/SWI_2.36"
+#define DRIVER_VERSION "2016-09-28/SWI_2.38"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -122,14 +125,6 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 int debug;
 int qos_debug;
 
-//TE Enable
-int iTEEnable = 1;
-
-/* The following definition is disabled (commented out) by default.
- * When uncommented it enables a feature that provides 'feedback' to an 
- * application about allocated and freed resources on transmit path  provided
- * CONFIG_PM is enabled in the kernel*/
-/*#define TX_URB_MONITOR*/
 #ifdef TX_URB_MONITOR
 
     /* 
@@ -139,7 +134,9 @@ int iTEEnable = 1;
      * TX_URB_MONITOR indicates the changes made for URB monitor to work 
      * 
      */
+    #ifndef TX_XMIT_SIERRA
     #define TX_XMIT_SIERRA
+    #endif
 
 /* Current URB monitor implementation is supported on kernel versions
  * between 2.6.31 and 2.6.32. This is because the default "usbnet_start_xmit" function
@@ -147,6 +144,9 @@ int iTEEnable = 1;
  * there is a change in "usbnet_start_xmit" which is not handled 
  * by Sierra Gobinet driver
  */
+//TO TEST DIFFERENT KERNEL VERSIONS
+//#undef LINUX_VERSION_CODE
+//#define LINUX_VERSION_CODE  KERNEL_VERSION( 3,13,1 )
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,31 ) ||\
        (LINUX_VERSION_CODE > KERNEL_VERSION( 2,6,32 ) &&\
        LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,35 )) ||\
@@ -154,10 +154,13 @@ int iTEEnable = 1;
        LINUX_VERSION_CODE < KERNEL_VERSION( 3,0,6 )) ||\
        (LINUX_VERSION_CODE > KERNEL_VERSION( 3,0,6 ) &&\
        LINUX_VERSION_CODE < KERNEL_VERSION( 3,10,1 )) ||\
-       LINUX_VERSION_CODE < KERNEL_VERSION( 3,12,0 )) &&\
-       (LINUX_VERSION_CODE > KERNEL_VERSION( 3,13,0 ) ||\
-       LINUX_VERSION_CODE > KERNEL_VERSION( 3,10,39 ) )
-       )
+       (LINUX_VERSION_CODE > KERNEL_VERSION( 3,11,0 ) &&\
+       LINUX_VERSION_CODE < KERNEL_VERSION( 3,12,0)) ||\
+       (LINUX_VERSION_CODE > KERNEL_VERSION( 3,12,0 ) &&\
+       LINUX_VERSION_CODE < KERNEL_VERSION( 4,4,0)) ||\
+       (LINUX_VERSION_CODE > KERNEL_VERSION( 4,4,0 ) &&\
+       LINUX_VERSION_CODE < KERNEL_VERSION( 4,4,2)) ||\
+       LINUX_VERSION_CODE >= KERNEL_VERSION( 4,5,0 ) )
 #error "URB_MONITOR is NOT supported on this kernel version"
 #endif
 #endif //TX_URB_MONITOR
@@ -171,7 +174,7 @@ int txQueueLength = 100;
 // Class should be created during module init, so needs to be global
 static struct class * gpClass;
 
-int threshold;
+/**************************************************/
 #ifdef CONFIG_PM
 bool bIsSuspend(sGobiUSBNet *pGobiDev)
 {
@@ -211,6 +214,7 @@ int GobiNetSuspend(
 {
    struct usbnet * pDev;
    sGobiUSBNet * pGobiDev;
+   int nRet = 0;
 
    if (pIntf == 0)
    {
@@ -260,7 +264,7 @@ int GobiNetSuspend(
    {
       // Stop QMI read callbacks
       pDev->udev->reset_resume = 0;
-
+      DBG("suspend event = 0x%04x\n", powerEvent.event );
       // Store power state to avoid duplicate resumes
       pIntf->dev.power.power_state.event = powerEvent.event;
    }
@@ -270,7 +274,25 @@ int GobiNetSuspend(
       //pDev->udev->reset_resume = 0;
    }
 
-   // Run usbnet's suspend function
+   #if defined(USB_INTRF_FUNC_SUSPEND) && defined(USB_INTRF_FUNC_SUSPEND_RW)
+   /* send control message to resume from suspend mode for all interface. 
+      This is required by modem on USB3.0 selective suspend */
+   if ( pDev->udev->speed >= USB_SPEED_SUPER )
+   {
+      nRet = usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+                               USB_REQ_SET_FEATURE, USB_RECIP_INTERFACE,
+                               USB_INTRF_FUNC_SUSPEND,
+                               USB_INTRF_FUNC_SUSPEND_RW | USB_INTRF_FUNC_SUSPEND_LP |
+                               pIntf->cur_altsetting->desc.bInterfaceNumber, /* two bytes in this field, suspend option(1 byte) | interface number(1 byte) */
+                               NULL, 0, USB_CTRL_SET_TIMEOUT);
+      if (nRet != 0)
+      {
+          DBG("[line:%d] send usb_control_msg failed!nRet = %d\n", __LINE__, nRet);
+      }
+   }
+   #endif
+
+   // Run usbnet's suspend function so that the kernel spin lock counter keeps balance
    return usbnet_suspend( pIntf, powerEvent );
 }
 
@@ -321,23 +343,49 @@ int GobiNetResume( struct usb_interface * pIntf )
 
    oldPowerState = pIntf->dev.power.power_state.event;
    pIntf->dev.power.power_state.event = PM_EVENT_ON;
-   DBG( "resuming from power mode %d\n", oldPowerState );
+   DBG( "resuming from power mode 0x%04x\n", oldPowerState );
 
-   if (oldPowerState & PM_EVENT_SUSPEND)
+   // It doesn't matter if this is autoresume or system resume
+   GobiClearDownReason( pGobiDev, DRIVER_SUSPENDED );
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,29 ))
+   // Kick Auto PM thread to process any queued URBs
+   complete( &pGobiDev->mAutoPM.mThreadDoWork );
+#endif
+
+#if defined(USB_INTRF_FUNC_SUSPEND) && defined(USB_INTRF_FUNC_SUSPEND_RW)
+   if ( pDev->udev->speed >= USB_SPEED_SUPER )
    {
-      // It doesn't matter if this is autoresume or system resume
-      GobiClearDownReason( pGobiDev, DRIVER_SUSPENDED );
-      #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,29 ))
-      // Kick Auto PM thread to process any queued URBs
-      complete( &pGobiDev->mAutoPM.mThreadDoWork );
-      #endif
+      nRet = usb_control_msg(pDev->udev, usb_sndctrlpipe(pDev->udev, 0),
+                               USB_REQ_SET_FEATURE, USB_RECIP_INTERFACE,
+                               USB_INTRF_FUNC_SUSPEND,
+                               pIntf->cur_altsetting->desc.bInterfaceNumber, /* two bytes in this field, suspend option(1 byte) | interface number(1 byte) */
+                               NULL, 0, USB_CTRL_SET_TIMEOUT);
+      if (nRet != 0)
+      {
+         DBG("[line:%d] send usb_control_msg failed!nRet = %d\n", __LINE__, nRet);
+      }
    }
-   else
+#endif
+
+   // 9x30(EM74xx) needs this when resume
+   nRet = usb_control_msg( pDev->udev,
+           usb_sndctrlpipe( pDev->udev, 0 ),
+           SET_CONTROL_LINE_STATE_REQUEST,
+           SET_CONTROL_LINE_STATE_REQUEST_TYPE,
+           CONTROL_DTR,
+           pIntf->cur_altsetting->desc.bInterfaceNumber,
+           NULL, 0, USB_CTRL_SET_TIMEOUT);
+   if (nRet != 0)
    {
-      DBG( "nothing to resume\n" );
-      return 0;
+       DBG( "fail at sending DTR during resume %d\n", nRet );
    }
+
+   /* Run usbnet's resume function so that the kernel spin lock counter keeps balance */
    nRet = usbnet_resume( pIntf );
+   if (nRet != 0)
+   {
+       DBG("[line:%d] usbnet_resume failed!nRet = %d\n", __LINE__, nRet);
+   }
    SetCurrentSuspendStat(pGobiDev,0);
    StartRead(pGobiDev);
    return nRet;
@@ -704,10 +752,9 @@ struct sk_buff *GobiNetDriverTxFixup(
    struct sk_buff *pSKB,
    gfp_t flags)
 {
-   unsigned char *p_qos_hdr;
-   DBG( "\n" );
    #ifdef CONFIG_PM
    struct sGobiUSBNet * pGobiDev;
+   DBG( "\n" );
    pGobiDev = (sGobiUSBNet *)pDev->data[0];
    if (pGobiDev == NULL)
    {
@@ -718,6 +765,8 @@ struct sk_buff *GobiNetDriverTxFixup(
    {
       usbnet_resume(pGobiDev->mpIntf);
    }
+   #else
+   DBG( "\n" );
    #endif
    // Skip Ethernet header from message
    if (skb_pull(pSKB, ETH_HLEN))
@@ -1143,7 +1192,7 @@ int GobiUSBNetStartXmit(
    sURBList * pURBListEntry, ** ppURBListEnd;
    void * pURBData;
    struct usbnet * pDev = netdev_priv( pNet );
-#if defined(DATA_MODE_RP) || defined(QOS_MODE)
+#if defined(DATA_MODE_RP)
    struct driver_info *info;
 #endif
 
@@ -1192,7 +1241,7 @@ int GobiUSBNetStartXmit(
       return NETDEV_TX_BUSY;
    }
 
-#if defined(DATA_MODE_RP) || defined(QOS_MODE)
+#if defined(DATA_MODE_RP)
    info = pDev->driver_info;
    if (info->tx_fixup)
    {
@@ -1514,7 +1563,7 @@ int FixEthFrame(struct usbnet *dev, struct sk_buff *skb, int isIpv4)
     }
     return 0;
 }
-
+#ifndef DATA_MODE_RP
 /* Make up an ethernet header if the packet doesn't have one.
  *
  * A firmware bug common among several devices cause them to send raw
@@ -1609,7 +1658,7 @@ fix_dest:
     PrintHex (skb->data, skb->len);
     return 1;
 }
-
+#endif
 /*=========================================================================*/
 // Struct driver_info
 /*=========================================================================*/
@@ -1622,10 +1671,6 @@ static const struct driver_info GobiNetInfo_qmi = {
 #ifdef DATA_MODE_RP
    .rx_fixup      = GobiNetDriverRxFixup,
    .tx_fixup      = GobiNetDriverTxFixup,
-#elif defined(QOS_MODE)
-   .tx_fixup      = GobiNetDriverTxQoS,
-   //WORD AROUND integrated from qmi_wwan.c::qmi_wwan_rx_fixup
-   .rx_fixup      = GobiNetDriverLteRxFixup,
 #else
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
@@ -1646,10 +1691,6 @@ static const struct driver_info GobiNetInfo_gobi = {
 #ifdef DATA_MODE_RP
    .rx_fixup      = GobiNetDriverRxFixup,
    .tx_fixup      = GobiNetDriverTxFixup,
-#elif defined(QOS_MODE)
-   .tx_fixup      = GobiNetDriverTxQoS,
-   //WORD AROUND integrated from qmi_wwan.c::qmi_wwan_rx_fixup
-   .rx_fixup      = GobiNetDriverLteRxFixup,
 #else
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
@@ -1669,10 +1710,6 @@ static const struct driver_info GobiNetInfo_9x15 = {
 #ifdef DATA_MODE_RP
    .rx_fixup      = GobiNetDriverRxFixup,
    .tx_fixup      = GobiNetDriverTxFixup,
-#elif defined(QOS_MODE)
-   .tx_fixup      = GobiNetDriverTxQoS,
-   //WORD AROUND integrated from qmi_wwan.c::qmi_wwan_rx_fixup
-   .rx_fixup      = GobiNetDriverLteRxFixup,
 #else
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
@@ -1746,13 +1783,13 @@ RETURN VALUE:
 
 void PrintCurrentUSBSpeed(struct usbnet * pDev)
 {
-    enum usb_device_speed {
-         USB_SPEED_UNKNOWN = 0,                  /* enumerating */
-         USB_SPEED_LOW, USB_SPEED_FULL,          /* usb 1.1 */
-         USB_SPEED_HIGH,                         /* usb 2.0 */
-         USB_SPEED_WIRELESS,                     /* wireless (usb 2.5) */
-         USB_SPEED_SUPER,                        /* usb 3.0 */
-    };
+   enum usb_device_speed {
+        USB_SPEED_UNKNOWN = 0,                  /* enumerating */
+        USB_SPEED_LOW, USB_SPEED_FULL,          /* usb 1.1 */
+        USB_SPEED_HIGH,                         /* usb 2.0 */
+        USB_SPEED_WIRELESS,                     /* wireless (usb 2.5) */
+        USB_SPEED_SUPER,                        /* usb 3.0 */
+   };
    switch(pDev->udev->speed)
     {
         case USB_SPEED_LOW:
@@ -1859,6 +1896,14 @@ int GobiUSBNetProbe(
 
 #ifdef DATA_MODE_RP
    pDev->net->flags |= IFF_NOARP;
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,4,0 ))
+   pDev->net->flags |= IFF_POINTOPOINT | IFF_NOARP | IFF_MULTICAST;
+   pDev->net->hard_header_len = 0;
+   pDev->net->addr_len        = 0;
+   /* recalculate buffers after changing hard_header_len */
+   usbnet_change_mtu(pDev->net, pDev->net->mtu);
+   #endif
+   
    printk(KERN_INFO "RawIP mode\n" );
 #else
    printk(KERN_INFO "Ethernet mode\n" );
@@ -1911,6 +1956,10 @@ int GobiUSBNetProbe(
           LINUX_VERSION_CODE < KERNEL_VERSION( 3,13,0 ))
    pNetDevOps->ndo_start_xmit = gobi_usbnet_start_xmit_3_12_xx;
    pNetDevOps->ndo_tx_timeout = gobi_usbnet_tx_timeout_3_12_xx;
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,4,0 ) &&\
+          LINUX_VERSION_CODE < KERNEL_VERSION( 4,5,0 ))
+   pNetDevOps->ndo_start_xmit = gobi_usbnet_start_xmit_4_4_xx;
+   pNetDevOps->ndo_tx_timeout = gobi_usbnet_tx_timeout_4_4_xx;
 #endif /* #if (LINUX_VERSION_CODE == KERNEL_VERSION( 2,6,31 ) */
 #else
    pNetDevOps->ndo_start_xmit = usbnet_start_xmit;
@@ -2085,6 +2134,4 @@ MODULE_PARM_DESC( interruptible, "Listen for and return on user interrupt" );
 module_param( txQueueLength, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( txQueueLength, 
                   "Number of IP packets which may be queued up for transmit" );
-module_param( iTEEnable, int, S_IRUGO | S_IWUSR );
-MODULE_PARM_DESC( iTEEnable, "Enable/Disable TE Flow Control" );
 

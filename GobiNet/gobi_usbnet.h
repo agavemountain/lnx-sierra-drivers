@@ -40,6 +40,11 @@ netdev_tx_t gobi_usbnet_start_xmit_3_10_21 (struct sk_buff *skb,
 void gobi_usbnet_tx_timeout_3_12_xx(struct net_device *net);
 netdev_tx_t gobi_usbnet_start_xmit_3_12_xx (struct sk_buff *skb,
                      struct net_device *net);
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,4,0 ) &&\
+          LINUX_VERSION_CODE < KERNEL_VERSION( 4,5,0 ))
+void gobi_usbnet_tx_timeout_4_4_xx(struct net_device *net);
+netdev_tx_t gobi_usbnet_start_xmit_4_4_xx(struct sk_buff *skb,
+                     struct net_device *net);
 
 #else
 #endif

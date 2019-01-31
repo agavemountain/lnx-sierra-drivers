@@ -89,7 +89,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2015-08-27/SWI_2.25"
+#define DRIVER_VERSION "2016-09-28/SWI_2.26"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -109,7 +109,9 @@ static int debug;
 static int flow_control = 1;
 // allow port open to success even when GPS control message failed
 static int ignore_gps_start_error = 1;
-
+#define OPEN_GPS_DELAY_IN_SECOND 10
+// Open GPS port delay 
+static int delay_open_gps_port = OPEN_GPS_DELAY_IN_SECOND;
 // Number of serial interfaces
 static int nNumInterfaces;
 
@@ -290,12 +292,19 @@ static struct usb_device_id GobiVIDPIDTable[] =
 };
 MODULE_DEVICE_TABLE( usb, GobiVIDPIDTable );
 
+enum {
+    eSendUnknown=-1,
+    eSendStart=0,
+    eSendEnd=1,
+};
 /* per port private data */
 struct sierra_port_private {
    /* Settings for the port */
    int rts_state;    /* Handshaking pins (outputs) */
    int dtr_state;
    int isClosing;
+   int iGPSStartState;
+   unsigned long ulExpires;
 };
 
 
@@ -450,6 +459,10 @@ static int Gobi_startup(struct usb_serial *serial)
 
    /* Now setup per port private data */
    for (i = 0; i < serial->num_ports; i++, portdata++) {
+      struct sierra_port_private *privatedata;
+      privatedata = portdata;
+      privatedata->iGPSStartState = eSendUnknown;
+      privatedata->ulExpires = jiffies + msecs_to_jiffies(delay_open_gps_port*1000);
       port = serial->port[i];
 
       /* Set the port private data pointer */
@@ -783,15 +796,44 @@ int GobiOpen(
    // Is this the GPS port?
    if ((IsGPSPort(pPort)) == true)
    {
+      int count = 0;
+      if(portdata->iGPSStartState == eSendUnknown)
+      {
+        if(jiffies<portdata->ulExpires)
+        {
+           unsigned long diff = jiffies_to_msecs(portdata->ulExpires-jiffies);
+           DBG("DELAY %lu msec\n",diff);
+           if(diff > 0)
+           msleep(diff);
+           DBG("DELAY FINISH\n");
+        }
+        else
+        {
+          DBG("NON DELAY OPEN!\n" );
+        }
+      }
+      portdata->iGPSStartState = eSendStart;
       DBG( "GPS Port detected! send GPS_START!\n" );
-      // Send startMessage, 1s timeout
-      nResult = usb_bulk_msg( pPort->serial->dev,
+      // Send startMessage, USB_CTRL_SET_TIMEOUT timeout
+      do
+      {
+        nResult = usb_bulk_msg( pPort->serial->dev,
                               usb_sndbulkpipe( pPort->serial->dev,
                                                pPort->bulk_out_endpointAddress ),
                               (void *)&startMessage[0],
                               sizeof( startMessage ),
                               &bytesWrote,
-                              100 );
+                              USB_CTRL_SET_TIMEOUT );
+        if(nResult!=0)
+        {
+           if(count++>6)
+           {
+              printk( KERN_INFO "Send GPS_START Timeout!\n" );
+              break;
+           }
+        }
+      }while(-ETIMEDOUT==nResult);
+      DBG( "send GPS_START done\n");
       if (nResult != 0)
       {
          DBG( "error %d sending startMessage\n", nResult );
@@ -810,6 +852,7 @@ int GobiOpen(
             return -EIO;
          }
       }
+      portdata->iGPSStartState = eSendEnd;
    }
 
    // Clear endpoint halt condition
@@ -1405,3 +1448,5 @@ MODULE_PARM_DESC( flow_control, "flow control enabled or not" );
 module_param( ignore_gps_start_error, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( ignore_gps_start_error, 
    "allow port open to success even when GPS control message failed");
+module_param( delay_open_gps_port, int, S_IRUGO | S_IWUSR );
+MODULE_PARM_DESC( delay_open_gps_port, "Delay Open GPS Port, after device ready" );

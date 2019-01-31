@@ -231,12 +231,15 @@ METHOD:
 DESCRIPTION:
    Get size of buffer needed for QMUX + QMIWDASetDataFormatReq
 
+PARAMETERS
+   te_flow_control [ I ] - TE Flow Control Flag
+
 RETURN VALUE:
    u16 - size of buffer
 ===========================================================================*/
-u16 QMIWDASetDataFormatReqSize( void )
+u16 QMIWDASetDataFormatReqSize( bool te_flow_control )
 {
-   if(iTEEnable)
+   if(te_flow_control)
    {
       return sizeof( sQMUX ) + 29; /* TE_FLOW_CONTROL */
    }
@@ -829,6 +832,7 @@ PARAMETERS
    pBuffer         [ 0 ] - Buffer to be filled
    buffSize        [ I ] - Size of pBuffer
    transactionID   [ I ] - Transaction ID
+   te_flow_control [ I ] - TE Flow Control Flag
 
 RETURN VALUE:
    int - Positive for resulting size of pBuffer
@@ -837,9 +841,10 @@ RETURN VALUE:
 int QMIWDASetDataFormatReq(
    void *   pBuffer,
    u16      buffSize,
-   u16      transactionID )
+   u16      transactionID,
+   bool     te_flow_control )
 {
-   if (pBuffer == 0 || buffSize < QMIWDASetDataFormatReqSize() )
+   if (pBuffer == 0 || buffSize < QMIWDASetDataFormatReqSize(te_flow_control) )
    {
       return -ENOMEM;
    }
@@ -855,7 +860,7 @@ int QMIWDASetDataFormatReq(
    put_unaligned( cpu_to_le16(0x0020), (u16 *)(pBuffer + sizeof( sQMUX ) + 3) );
 
    // Size of TLV's
-   if(iTEEnable)
+   if(te_flow_control)
    {
       /* TE_FLOW_CONTROL */
       put_unaligned( cpu_to_le16(0x0016), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
@@ -873,11 +878,7 @@ int QMIWDASetDataFormatReq(
    put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 8)); 
 
    /* DataFormat: 0-default; 1-QoS hdr present 2 bytes */
-#ifdef QOS_MODE
-   *(u8 *)(pBuffer + sizeof( sQMUX ) + 10) = 1; /* QOS header */
-#else
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 10) = 0; /* no-QOS header */
-#endif
 
    /* TLVType Link-Layer Protocol  (Optional) 1 byte */
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 11) = 0x11;
@@ -905,20 +906,21 @@ int QMIWDASetDataFormatReq(
    /* TLV Data */
    put_unaligned( cpu_to_le32(0x00000000), (u32 *)(pBuffer + sizeof( sQMUX ) + 21));
 
-   if(iTEEnable)
+   if(te_flow_control)
    {
-   /* TLVType Flow Control - 1 byte */
-   *(u8 *)(pBuffer + sizeof( sQMUX ) + 25) = 0x1A;
+      /* TLVType Flow Control - 1 byte */
+      *(u8 *)(pBuffer + sizeof( sQMUX ) + 25) = 0x1A;
 
-   /* TLVLength 2 bytes */
-   put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 26));
+      /* TLVLength 2 bytes */
+      put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 26));
 
-   /* Flow Control: 0 - not done by TE; 1 - done by TE  1 byte */
-   *(u8 *)(pBuffer + sizeof( sQMUX ) + 28) = 1; /* flow control done by TE */
+      /* Flow Control: 0 - not done by TE; 1 - done by TE  1 byte */
+      *(u8 *)(pBuffer + sizeof( sQMUX ) + 28) = 1; /* flow control done by TE */
+   
    } /* TE_FLOW_CONTROL */
 
    // success
-   return QMIWDASetDataFormatReqSize();
+   return QMIWDASetDataFormatReqSize(te_flow_control);
 }
 
 
@@ -969,11 +971,7 @@ int QMICTLSetDataFormatReq(
    put_unaligned( cpu_to_le16(0x0001), (u16 *)(pBuffer + sizeof( sQMUX ) + 7)); 
 
    /* DataFormat: 0-default; 1-QoS hdr present 2 bytes */
-#ifdef QOS_MODE
-   *(u8 *)(pBuffer + sizeof( sQMUX ) + 9) = 1; /* QOS header */
-#else
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 9) = 0; /* no-QOS header */
-#endif
 
     /* TLVType Link-Layer Protocol  (Optional) 1 byte */
     *(u8 *)(pBuffer + sizeof( sQMUX ) + 10) = TLV_TYPE_LINK_PROTO;
