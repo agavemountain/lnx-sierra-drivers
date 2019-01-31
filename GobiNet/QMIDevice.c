@@ -130,6 +130,7 @@ POSSIBILITY OF SUCH DAMAGE.
 extern int debug;
 extern int is9x15;
 extern int interruptible;
+extern int iTEEnable;
 const bool clientmemdebug = 0;
 enum {
  eNotifyListEmpty=-1,
@@ -502,7 +503,10 @@ void GobiSetDownReason(
    u8                 reason )
 {
    set_bit( reason, &pDev->mDownReason );
-
+   if(reason==NO_NDIS_CONNECTION)
+   {
+      pDev->iNetLinkStatus = eNetDeviceLink_Disconnected;
+   }
    netif_carrier_off( pDev->mpNetDev->net );
 }
 
@@ -525,7 +529,10 @@ void GobiClearDownReason(
    u8                 reason )
 {
    clear_bit( reason, &pDev->mDownReason );
-
+   if(reason==NO_NDIS_CONNECTION)
+   {
+      pDev->iNetLinkStatus = eNetDeviceLink_Connected;
+   }
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,11,0 ))
     netif_carrier_on( pDev->mpNetDev->net );
 #else
@@ -3201,14 +3208,16 @@ int UserspaceOpen(
    struct file *          pFilp )
 {
    sQMIFilpStorage * pFilpData;
+   sQMIDev * pQMIDev = NULL;
+   sGobiUSBNet * pDev = NULL;
    DBG( "%s\n",__FUNCTION__ );
    // Optain device pointer from pInode
-    sQMIDev * pQMIDev = container_of( pInode->i_cdev,
+   pQMIDev = container_of( pInode->i_cdev,
                                      sQMIDev,
                                      mCdev );
-   sGobiUSBNet * pDev = container_of( pQMIDev,
-                                    sGobiUSBNet,
-                                    mQMIDev );
+   pDev = container_of( pQMIDev,
+                                sGobiUSBNet,
+                                mQMIDev );
    if(signal_pending(current))
    {
       return -ERESTARTSYS;
@@ -3842,22 +3851,21 @@ PARAMETERS
    pFilp      [ I ] - The file to apply the lock to
    cmd        [ I ] - type of locking operation (F_SETLK, F_GETLK, etc.)
    fl         [I/O] - The lock to be applied
-   conf       [I/O] - Place to return a copy of the conflicting lock, if found.
 
 RETURN VALUE:
    unsigned int - bitmask of what operations can be done immediately
 ===========================================================================*/
-int UserSpaceLock(struct file *filp, unsigned int cmd, struct file_lock *fl, struct file_lock *conf)
+int UserSpaceLock(struct file *filp, int cmd, struct file_lock *fl)
 {
-   if((filp!=NULL) && (fl!=NULL) && (conf!=NULL))
+   if((filp!=NULL) && (fl!=NULL))
    {
       #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,9,0 ))
       if(file_inode(filp)!=NULL)
       {
-         return posix_lock_file(filp, fl, conf);
+         return posix_lock_file(filp, fl, NULL);
       }
       #else
-      return posix_lock_file(filp, fl, conf);
+      return posix_lock_file(filp, fl, NULL);
       #endif
    }
    return -ENOLCK;
@@ -4206,43 +4214,63 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    if (is9x15)
    {
       i=0;
+      pDev->iDataMode = eDataMode_Ethernet;
       do
       {
-         #ifdef TE_FLOW_CONTROL
-         result = QMIWDASetDataFormat (pDev, true);
-         #else
-         result = QMIWDASetDataFormat (pDev, false);
-         #endif
+         if(iTEEnable==1)//TE_FLOW_CONTROL
+         {
+            result = QMIWDASetDataFormat (pDev, true);
+         }
+         else
+         {
+            result = QMIWDASetDataFormat (pDev, false);
+         }
          if(isModuleUnload(pDev))
          {
             return -EFAULT;;
          }
          if(i++>MAX_RETRY)
-            break;
+         {
+            if(pDev->iDataMode==eDataMode_Ethernet)
+            {
+               pDev->iDataMode=eDataMode_RAWIP;
+               i = 0;
+            }
+            else
+            {
+               break;
+            }
+         }
       }while(result!=0);
        if(result != 0)
        {
-          #ifdef TE_FLOW_CONTROL
-          result = QMIWDASetDataFormat (pDev, false);
-          if(result != 0)
+          if(iTEEnable==1)//TE_FLOW_CONTROL
           {
-             printk(KERN_INFO "Set Data Format Fail\n");
+             result = QMIWDASetDataFormat (pDev, false);
+             if(result != 0)
+             {
+                printk(KERN_INFO "Set Data Format Fail\n");
+             }
+             else
+             {
+                 printk(KERN_INFO "TE Flow Control disabled\n");
+             }
           }
           else
           {
-              printk(KERN_INFO "TE Flow Control disabled\n");
+             printk(KERN_INFO "Set Data Format Fail\n");
           }
-          #else
-          printk(KERN_INFO "Set Data Format Fail\n");
-          #endif
        }
        else
        {
-          #ifdef TE_FLOW_CONTROL
-          printk(KERN_INFO "TE Flow Control Enabled\n");
-          #else
-          printk(KERN_INFO "TE Flow Control disabled\n");
-          #endif
+          if(iTEEnable==1)//TE_FLOW_CONTROL
+          {
+             printk(KERN_INFO "TE Flow Control Enabled\n");
+          }
+          else
+          {
+             printk(KERN_INFO "TE Flow Control disabled\n");
+          }
        }
    }
    else
@@ -4613,6 +4641,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    if (IsDeviceValid( pDev ) == false)
    {
       DBG( "wrong device\n" );
+      pDev->iNetLinkStatus = eNetDeviceLink_Disconnected;
       KillRead( pDev );
       // Send SetControlLineState request (USB_CDC)
       result = usb_control_msg( pDev->mpNetDev->udev,
@@ -4630,6 +4659,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
 
       return;
    }
+   pDev->iNetLinkStatus = eNetDeviceLink_Disconnected;
    if(pDev->mQMIDev.proc_file != NULL)
    {
       sprintf(qcqmi_dev_name, "qcqmi%d", (int)pDev->mQMIDev.qcqmi);
@@ -4976,7 +5006,10 @@ bool QMIReady(
    set_current_state(TASK_RUNNING);
 
    DBG( "QMI Ready after %u milliseconds\n", curTime );
-
+   if(SetPowerSaveMode(pDev,0)<0)
+   {
+      printk(KERN_ERR"Set Power Save Mode error\n");
+   }
    // Success
    return true;
 }
@@ -5520,7 +5553,8 @@ int QMICTLSetDataFormat( sGobiUSBNet * pDev )
    // Fill buffer
    result = QMICTLSetDataFormatReq( pWriteBuffer,
                             writeBufferSize,
-                            transactionID );
+                            transactionID ,
+                            pDev->iDataMode);
 
    if (result < 0)
    {
@@ -5555,7 +5589,7 @@ int QMICTLSetDataFormat( sGobiUSBNet * pDev )
          LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
 
          // We care about the result: call Response  function
-         result = QMICTLSetDataFormatResp( pReadBuffer, readBufferSize);
+         result = QMICTLSetDataFormatResp( pReadBuffer, readBufferSize,pDev->iDataMode);
          if(pReadBuffer)
          kfree( pReadBuffer );
 
@@ -5636,7 +5670,8 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, bool te_flow_control )
    result = QMIWDASetDataFormatReq( pWriteBuffer,
                                     writeBufferSize,
                                     1,
-                                    te_flow_control );
+                                    te_flow_control,
+                                    pDev->iDataMode);
    if (result < 0)
    {
       kfree( pWriteBuffer );
@@ -5668,7 +5703,8 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, bool te_flow_control )
    readBufferSize = result;
 
    result = QMIWDASetDataFormatResp( pReadBuffer,
-                                     readBufferSize );
+                                     readBufferSize ,
+                                     pDev->iDataMode);
    if(pReadBuffer)
    kfree( pReadBuffer );
 
@@ -5796,5 +5832,382 @@ int RemoveAndPopNotifyList(
          return eNotifyListNotFound;
       }
    }while(ppNotifyList!=NULL);
+   return eNotifyListEmpty;
 }
 
+/*===========================================================================
+METHOD:
+   SetPowerSaveMode (Public Method)
+
+DESCRIPTION:
+   Set mode in power save mode
+
+PARAMETERS:
+   pDev     [ I ] - Device specific memory
+   mode     [ I ] - power save mode, 0:wakeup ; 1:suspend
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for failure
+===========================================================================*/
+int SetPowerSaveMode(sGobiUSBNet *pDev,u8 mode)
+{
+   int result;
+   void * pWriteBuffer;
+   u16 writeBufferSize;
+   void * pReadBuffer;
+   u16 readBufferSize;
+   u8 transactionID;
+   unsigned long flags;
+   struct semaphore readSem;
+
+   if (IsDeviceValid( pDev ) == false)
+   {
+      printk(KERN_ERR "Invalid device!\n" );
+      return -ENXIO;
+   }
+   
+   sema_init( &readSem, SEMI_INIT_DEFAULT_VALUE );
+    writeBufferSize = QMICTLSetPowerSaveModeReqSize();
+    pWriteBuffer = kmalloc( writeBufferSize, GFP_KERNEL );
+    if (pWriteBuffer == NULL)
+    {
+        return -ENOMEM;
+    }
+    
+    transactionID = QMIXactionIDGet(pDev);
+    result = ReadAsync( pDev, QMICTL, transactionID, UpSem, &readSem );
+    
+    result = QMICTLSetPowerSaveModeReq(pWriteBuffer,
+                                     writeBufferSize,
+                                     transactionID,
+                                     mode );
+   if (result < 0)
+   {
+       kfree( pWriteBuffer );
+       return result;
+   }
+   result = WriteSyncNoResume( pDev,
+          pWriteBuffer,
+          writeBufferSize,
+          QMICTL );
+   kfree( pWriteBuffer );
+
+   if (result < 0)
+   {
+        DBG( "bad write data %d\n", result );
+        return result;
+   }
+   wait_ms(QMI_CONTROL_MSG_DELAY_MS);
+   if (down_trylock( &readSem ) == 0)
+   {
+      // Enter critical section
+      flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
+
+      // Pop the read data
+      if (PopFromReadMemList( pDev,
+                              QMICTL,
+                              transactionID,
+                              &pReadBuffer,
+                              &readBufferSize ) == true)
+      {
+         // Success
+
+         // End critical section
+         LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+         result = QMICTLSetPowerSaveModeResp(pReadBuffer,
+                                               readBufferSize);
+    
+         // We don't care about the result
+         if(pReadBuffer)
+         kfree( pReadBuffer );
+         return result;
+      }
+      else
+      {
+         // Read mismatch/failure, unlock and continue
+         LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+      }
+   }
+   else
+   {
+      // Timeout, remove the async read
+      ReleaseNotifyList( pDev, QMICTL, transactionID );
+      result = -1;
+   }
+   return result;
+
+}
+
+/*==========================================================================
+METHOD:
+   WriteSyncNoResume (Public Method)
+
+DESCRIPTION:
+   Start synchronous write without resume device
+
+PARAMETERS:
+   pDev                 [ I ] - Device specific memory
+   pWriteBuffer         [ I ] - Data to be written
+   writeBufferSize      [ I ] - Size of data to be written
+   clientID             [ I ] - Client ID of requester
+
+RETURN VALUE:
+   int - write size (includes QMUX)
+         negative errno for failure
+============================================================================*/
+int WriteSyncNoResume(
+   sGobiUSBNet *          pDev,
+   char *                 pWriteBuffer,
+   int                    writeBufferSize,
+   u16                    clientID )
+{
+   int i;
+   int result;
+   int iLockRetry =0;
+   DBG("\n");
+   if (IsDeviceValid( pDev ) == false)
+   {
+      DBG( "Invalid device!\n" );
+      return -ENXIO;
+   }
+
+   if (pDev->mbUnload >= eStatUnloading)
+   {
+      DBG( "Unloading device!\n" );
+      return -ENXIO;
+   }
+   // Fill writeBuffer with QMUX
+   result = FillQMUX( clientID, pWriteBuffer, writeBufferSize );
+   if (result < 0)
+   {
+      return result;
+   }
+
+   // Wake device
+   #ifdef CONFIG_PM
+   usb_autopm_get_interface_no_resume( pDev->mpIntf );
+   #else
+   usb_autopm_get_interface( pDev->mpIntf );
+   #endif
+
+   DBG( "Actual Write:\n" );
+   PrintHex( pWriteBuffer, writeBufferSize );
+
+   // Write Control URB, protect with read semaphore to track in-flight USB control writes in case of disconnect
+   for(i=0;i<USB_WRITE_RETRY;i++)
+   {
+      
+      if(isModuleUnload(pDev))
+      {
+         DBG( "unloaded\n" );
+         return -EFAULT;
+      }
+      pDev->iShutdown_read_sem= __LINE__;
+      if(signal_pending(current))
+      {
+         return -ERESTARTSYS;
+      }
+
+      iLockRetry = 0;
+      while(down_read_trylock(&(pDev->shutdown_rwsem))!=1)
+      {
+         wait_ms(5);
+         if(iLockRetry++>100)
+         {
+            DBG("down_read_trylock timeout");
+            return -EFAULT;
+         }
+         if(pDev==NULL)
+         {
+            DBG( "NULL\n" );
+            return -EFAULT;
+         }
+         if (pDev->mbUnload >= eStatUnloading)
+         {
+            DBG( "unloaded\n" );
+            return -EFAULT;
+         }
+      }
+      smp_mb();
+      result = usb_control_msg( pDev->mpNetDev->udev, usb_sndctrlpipe( pDev->mpNetDev->udev, 0 ),
+             SEND_ENCAPSULATED_COMMAND,
+             USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
+             0, pDev->mpIntf->cur_altsetting->desc.bInterfaceNumber,
+             (void*)pWriteBuffer, writeBufferSize,
+             USB_WRITE_TIMEOUT );
+       if(signal_pending(current))
+       {
+          return -ERESTARTSYS;
+       }
+       if(pDev==NULL)
+       {
+          return -EFAULT;
+       }
+       up_read(&pDev->shutdown_rwsem);
+       pDev->iShutdown_read_sem=- __LINE__;
+       
+       if (pDev->mbUnload >= eStatUnloading)
+       {
+          DBG( "unloaded\n" );
+          return -EFAULT;
+       }
+
+       if (signal_pending(current))
+       {
+           return -ERESTARTSYS;
+       }
+
+       if (result < 0)
+       {
+          printk(KERN_WARNING "usb_control_msg failed (%d)", result);
+       }
+       // Control write transfer may occasionally timeout with certain HCIs, attempt a second time before reporting an error
+       if (result == -ETIMEDOUT)
+       {
+           pDev->writeTimeoutCnt++;
+           printk(KERN_WARNING "Write URB timeout, cnt(%d)\n", pDev->writeTimeoutCnt);
+       }
+       else if(result < 0 )
+       {
+          DBG( "%s no device!\n" ,__FUNCTION__);
+           return result;
+       }
+       else
+       {
+           break;
+       }
+       if (IsDeviceValid( pDev ) == false)
+       {
+          DBG( "%s Invalid device!\n" ,__FUNCTION__);
+          return -ENXIO;
+       }
+       if (pDev->mbUnload > eStatUnloading)
+       {
+         DBG( "unloaded\n" );
+         return -EFAULT;
+       }
+   }
+
+   // Write is done, release device
+   usb_autopm_put_interface( pDev->mpIntf );
+   return result;
+}
+
+int ReleaseNotifyList(sGobiUSBNet *pDev,u16 clientID,u8 transactionID)
+{
+   unsigned long flags;
+   flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
+   // Timeout, remove the async read
+   NotifyAndPopNotifyList( pDev, clientID, transactionID );
+   // End critical section
+   LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+   return 0;
+}
+
+#ifdef CONFIG_PM
+/*===========================================================================
+METHOD:
+   ConfigPowerSaveSettings (Public Method)
+
+DESCRIPTION:
+   Set modem power save mode config
+
+PARAMETERS:
+   pDev      [ I ] - Device specific memory
+   service   [ I ] - QMI service number
+   indication[ I ] - QMI indication number
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for failure
+===========================================================================*/
+int ConfigPowerSaveSettings(sGobiUSBNet *pDev, u8 service, u8 indication)
+{
+   int result;
+   void * pWriteBuffer;
+   u16 writeBufferSize;
+   void * pReadBuffer;
+   u16 readBufferSize;
+   u8 transactionID;
+   unsigned long flags;
+   struct semaphore readSem;
+   
+   if (IsDeviceValid(pDev) == false)
+   {
+      DBG( "Invalid device!\n" );
+      return -ENXIO;
+   }
+   sema_init( &readSem, SEMI_INIT_DEFAULT_VALUE );
+
+   writeBufferSize = QMICTLConfigPowerSaveSettingsReqSize();
+   pWriteBuffer = kmalloc( writeBufferSize, GFP_KERNEL );
+   if (pWriteBuffer == NULL)
+   {
+      return -ENOMEM;
+   }
+    
+    transactionID = QMIXactionIDGet(pDev);
+    result = ReadAsync( pDev, QMICTL, transactionID, UpSem, &readSem );
+    result = QMICTLConfigPowerSaveSettingsReq(pWriteBuffer,
+                                              writeBufferSize,
+                                              transactionID,
+                                              service,
+                                              indication);
+    if (result < 0)
+    {
+        kfree( pWriteBuffer );
+        return result;
+    }
+
+    result = WriteSyncNoResume( pDev,
+                      pWriteBuffer,
+                      writeBufferSize,
+                      QMICTL );
+    kfree( pWriteBuffer );
+
+    if (result < 0)
+    {
+        DBG( "bad write data %d\n", result );
+        return result;
+    }
+    wait_ms(QMI_CONTROL_MSG_DELAY_MS);
+   if (down_trylock( &readSem ) == 0)
+   {
+      // Enter critical section
+      flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
+
+      // Pop the read data
+      if (PopFromReadMemList( pDev,
+                              QMICTL,
+                              transactionID,
+                              &pReadBuffer,
+                              &readBufferSize ) == true)
+      {
+         // Success
+
+         // End critical section
+         LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+         result = QMICTLConfigPowerSaveSettingsResp(pReadBuffer,
+                                               readBufferSize);
+    
+         // We don't care about the result
+         if(pReadBuffer)
+         kfree( pReadBuffer );
+         return result;
+      }
+      else
+      {
+         // Read mismatch/failure, unlock and continue
+         LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+      }
+    }
+   else
+   {
+      // Timeout, remove the async read
+      ReleaseNotifyList( pDev, QMICTL, transactionID );
+      result = -1;
+   }
+   return result;
+}
+#endif

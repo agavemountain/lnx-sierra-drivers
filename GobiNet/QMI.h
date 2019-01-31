@@ -118,11 +118,6 @@ if(qos_debug == 1)\
    printk( KERN_INFO "GobiNet[QoS]::%s " format, __FUNCTION__, ## arg );\
 }
 
-/*
- * enable/disable TE flow control
- */
-#define TE_FLOW_CONTROL
-
 /* The following definition is disabled (commented out) by default.
  * When uncommented it enables raw IP data format mode of operation */
 /*#define DATA_MODE_RP*/
@@ -139,6 +134,14 @@ if(qos_debug == 1)\
 #define QMIDMS 2
 #define QMIQOS 4
 #define QMIWDA 0x1A
+#define QMINAS   3
+#define QMIWMS   5
+#define QMIVOICE 9
+
+#define QMI_WMS_EVENT_REPORT_IND        0x01
+#define QMI_NAS_SERVING_SYSTEM_IND      0x24
+#define QMI_VOICE_ALL_CALL_STATUS_IND   0x2E
+#define QMI_WDS_GET_PKT_SRVC_STATUS_IND 0x22
 
 #define u8        unsigned char
 #define u16       unsigned short
@@ -347,13 +350,15 @@ int QMIWDASetDataFormatReq(
    void *   pBuffer,
    u16      buffSize,
    u16      transactionID,
-   bool     te_flow_control );
+   bool     te_flow_control,
+   int      iDataMode);
 
 // Fill buffer with QMI CTL Set Data Format Request
 int QMICTLSetDataFormatReq(
    void *   pBuffer,
    u16      buffSize,
-   u8       transactionID );
+   u8       transactionID ,
+   int      iDataMode);
 
 int QMICTLSyncReq(
    void *pBuffer,
@@ -406,15 +411,46 @@ int QMIDMSGetMEIDResp(
 // Parse the QMI DMS Get Serial Numbers Resp
 int QMIWDASetDataFormatResp(
    void *   pBuffer,
-   u16      buffSize );
+   u16      buffSize,
+   int      iDataMode);
 
 // Parse the QMI Set Data Format Resp
 int QMICTLSetDataFormatResp(
    void *   pBuffer,
-   u16      buffSize);
+   u16      buffSize,
+   int      iDataMode);
 
 // Pasre the QMI CTL Sync Response
 int QMICTLSyncResp(
    void *pBuffer,
    u16  buffSize );
 
+// Get size of buffer needed for QMUX + QMICTLSetPowerSaveModeReq
+u16  QMICTLSetPowerSaveModeReqSize( void );
+
+// Fill buffer with QMI CTL Set Power Save Mode Request
+int QMICTLSetPowerSaveModeReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u8       transactionID,
+   u8       mode);
+
+// Parse the QMI Set Power Save Mode Resp   
+int QMICTLSetPowerSaveModeResp(
+   void *   pBuffer,
+   u16      buffSize );
+
+int QMICTLConfigPowerSaveSettingsReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u8       transactionID,
+   u8       service,
+   u8       indication);
+
+// Get size of buffer needed for QMUX + QMICTLPowerSaveSettingsReq
+u16 QMICTLConfigPowerSaveSettingsReqSize( void );
+
+// Parse the QMI Config Power Save Settings Resp      
+int QMICTLConfigPowerSaveSettingsResp(
+   void *   pBuffer,
+   u16      buffSize );
