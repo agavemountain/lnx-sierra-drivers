@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-10-30/SWI_2.30"
+#define DRIVER_VERSION "2017-12-22/SWI_2.31"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -271,19 +271,22 @@ static struct usb_device_id GobiVIDPIDTable[] =
    /* Sierra Wireless QMI AR759x */
    { USB_DEVICE(0x1199, 0x9100),
       /* blacklist the interface */
-      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+      /* whitelist interfaces 5 & 6 for raw data and open sim resp. */
+      .driver_info = BIT(1) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
    
    /* Sierra Wireless QMI AR758x */
    { USB_DEVICE(0x1199, 0x9102),
       /* blacklist the interface */
-      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+      /* whitelist interfaces 5 & 6 for raw data and open sim resp. */
+      .driver_info = BIT(1) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
    
    /* Sierra Wireless QMI AR759x */
    { USB_DEVICE(0x1199, 0x9110),
       /* blacklist the interface */
-      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+      /* whitelist interfaces 5 & 6 for raw data and open sim resp. */
+      .driver_info = BIT(1) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
    
    /* Sierra Wireless QMI MC75xx/EM75xx BOOT*/
