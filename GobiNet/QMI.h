@@ -110,7 +110,7 @@ extern int qos_debug;
 #define DBG( format, arg... )\
 if(debug == 1)\
 {\
-      printk( KERN_INFO "GobiNet::%s " format, __FUNCTION__, ## arg ); \
+      printk( KERN_INFO "GobiNet::%s(%d) " format, __FUNCTION__,task_pid_nr(current), ## arg );\
 }
 #define QDBG( format, arg... )\
 if(qos_debug == 1)\

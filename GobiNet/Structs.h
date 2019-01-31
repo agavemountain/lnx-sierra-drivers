@@ -394,7 +394,7 @@ typedef struct sGobiUSBNet
    /* QMI "device" status */
    bool                   mbQMIValid;
    int                   mbUnload;
-
+   int                   mReleaseClientIDFail;
    /* QMI "device" memory */
    sQMIDev                mQMIDev;
 
@@ -451,6 +451,8 @@ typedef struct sGobiUSBNet
    u16 WDSClientID;
    int iNetLinkStatus;
    int iDataMode;
+   struct mutex urb_lock;
+   struct mutex notif_lock;
 } sGobiUSBNet;
 
 /*=========================================================================*/
@@ -472,5 +474,8 @@ typedef struct sQMIFilpStorage
    struct semaphore       mReleasedSem;
    int                    iIsClosing;
    int                    iReadSyncResult;
+   int                    iInfNum;
+   struct task_struct     *pOpenTask;
+   int                    iCount;
 } sQMIFilpStorage;
 

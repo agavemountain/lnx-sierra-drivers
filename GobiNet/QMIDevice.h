@@ -136,7 +136,8 @@ extern int qcqmi_table[MAX_QCQMI];
 //Register State
 enum {
    eClearCID=0,
-   eClearAndReleaseCID=1
+   eClearAndReleaseCID=1,
+   eForceClearAndReleaseCID=2,
 };
 
 /*=========================================================================*/
@@ -144,7 +145,8 @@ enum {
 /*=========================================================================*/
 
 // Basic test to see if device memory is valid
-bool IsDeviceValid( sGobiUSBNet * pDev );
+
+bool IsDeviceDisconnect(sGobiUSBNet *pDev);
 
 #ifdef CONFIG_PM
 bool bIsSuspend(sGobiUSBNet *pGobiDev);
@@ -177,7 +179,7 @@ bool GobiTestDownReason(
 /*=========================================================================*/
 
 // Resubmit interrupt URB, re-using same values
-int ResubmitIntURB( struct urb * pIntURB );
+int ResubmitIntURB(sGobiUSBNet * pDev, struct urb * pIntURB );
 
 // Read callback
 //    Put the data in storage and notify anyone waiting for data
@@ -204,7 +206,8 @@ int ReadAsync(
    u16                clientID,
    u16                transactionID,
    void               (*pCallback)(sGobiUSBNet *, u16, void *),
-   void *             pData );
+   void *             pData ,
+   int                iSpinLock);
 
 // Notification function for synchronous read
 void UpSem( 
@@ -235,6 +238,13 @@ int WriteSync(
 
 // Start synchronous write without resume device
 int WriteSyncNoResume(
+   sGobiUSBNet *    pDev,
+   char *             pInWriteBuffer,
+   int                size,
+   u16                clientID );
+
+// Start synchronous write no retry
+int WriteSyncNoRetry(
    sGobiUSBNet *    pDev,
    char *             pInWriteBuffer,
    int                size,
@@ -424,7 +434,7 @@ int UserSpaceLock(struct file *filp, int cmd, struct file_lock *fl);
 void gobi_flush_work(void);
 
 // Close Opened File Inode
-void CloseFileInode(sGobiUSBNet * pDev);
+void CloseFileInode(sGobiUSBNet * pDev,int iCount);
 
 // Set modem in specific power save mode
 int SetPowerSaveMode(sGobiUSBNet *pDev,u8 mode);
@@ -437,4 +447,12 @@ u8 QMIXactionIDGet( sGobiUSBNet *pDev);
 
 // Release Specific Client ID Nofitication From Memory List
 int ReleaseNotifyList(sGobiUSBNet *pDev,u16 clientID,u8 transactionID);
+
+
+// 
+int Gobi_usb_control_msg(struct usb_device *dev, unsigned int pipe, __u8 request,
+                     __u8 requesttype, __u16 value, __u16 index, void *data,
+                      __u16 size, int timeout);
+
+int AddClientToMemoryList(sGobiUSBNet *pDev,u16 clientID);
 
