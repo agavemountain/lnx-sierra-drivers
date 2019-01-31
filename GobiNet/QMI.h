@@ -107,16 +107,16 @@ POSSIBILITY OF SUCH DAMAGE.
 extern int debug;
 extern int qos_debug;
 // DBG macro
-#define DBG( format, arg... ) \
-   if (debug == 1)\
-   { \
+#define DBG( format, arg... )\
+if(debug == 1)\
+{\
       printk( KERN_INFO "GobiNet::%s " format, __FUNCTION__, ## arg ); \
-   }
-#define QDBG( format, arg... ) \
-   if (qos_debug == 1)\
-   { \
-      printk( KERN_INFO "GobiNet[QoS]::%s " format, __FUNCTION__, ## arg ); \
-   }
+}
+#define QDBG( format, arg... )\
+if(qos_debug == 1)\
+{\
+   printk( KERN_INFO "GobiNet[QoS]::%s " format, __FUNCTION__, ## arg );\
+}
 
 /* EXPERIMENTAL feature
  * The following definition is disabled (commented out) by default.
@@ -166,8 +166,8 @@ extern int qos_debug;
 // us (it polls at HZ/4 usually) before we report too many false errors.
 #define THROTTLE_JIFFIES   (HZ/8)
 #define RX_MAX_QUEUE_MEMORY (60 * 1518)
-#define	TX_QLEN(dev) (((dev)->udev->speed == USB_SPEED_HIGH) ? \
-			(RX_MAX_QUEUE_MEMORY/(dev)->hard_mtu) : 4)
+#define TX_QLEN(dev) (((dev)->udev->speed == USB_SPEED_HIGH) ? \
+        (RX_MAX_QUEUE_MEMORY/(dev)->hard_mtu) : 4)
 /*=========================================================================*/
 // Struct sQMUX
 //
@@ -396,4 +396,8 @@ int QMICTLSetDataFormatResp(
 int QMICTLSyncResp(
    void *pBuffer,
    u16  buffSize );
+
+//TE Enable
+extern int iTEEnable;
+
 

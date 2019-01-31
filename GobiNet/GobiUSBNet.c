@@ -107,7 +107,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2015-08-27/SWI_2.34"
+#define DRIVER_VERSION "2015-10-16/SWI_2.35"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -121,6 +121,9 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 // Debug flag
 int debug;
 int qos_debug;
+
+//TE Enable
+int iTEEnable = 1;
 
 /* The following definition is disabled (commented out) by default.
  * When uncommented it enables a feature that provides 'feedback' to an 
@@ -151,6 +154,8 @@ int qos_debug;
        LINUX_VERSION_CODE < KERNEL_VERSION( 3,0,6 )) ||\
        (LINUX_VERSION_CODE > KERNEL_VERSION( 3,0,6 ) &&\
        LINUX_VERSION_CODE < KERNEL_VERSION( 3,10,1 )) ||\
+       LINUX_VERSION_CODE < KERNEL_VERSION( 3,12,0 )) &&\
+       (LINUX_VERSION_CODE > KERNEL_VERSION( 3,13,0 ) ||\
        LINUX_VERSION_CODE > KERNEL_VERSION( 3,10,39 ) )
        )
 #error "URB_MONITOR is NOT supported on this kernel version"
@@ -1901,6 +1906,11 @@ int GobiUSBNetProbe(
        LINUX_VERSION_CODE <= KERNEL_VERSION( 3,10,39 ))
    pNetDevOps->ndo_start_xmit = gobi_usbnet_start_xmit_3_10_21;
    pNetDevOps->ndo_tx_timeout = gobi_usbnet_tx_timeout_3_10_21;
+
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,12,0 ) &&\
+          LINUX_VERSION_CODE < KERNEL_VERSION( 3,13,0 ))
+   pNetDevOps->ndo_start_xmit = gobi_usbnet_start_xmit_3_12_xx;
+   pNetDevOps->ndo_tx_timeout = gobi_usbnet_tx_timeout_3_12_xx;
 #endif /* #if (LINUX_VERSION_CODE == KERNEL_VERSION( 2,6,31 ) */
 #else
    pNetDevOps->ndo_start_xmit = usbnet_start_xmit;
@@ -2075,4 +2085,6 @@ MODULE_PARM_DESC( interruptible, "Listen for and return on user interrupt" );
 module_param( txQueueLength, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( txQueueLength, 
                   "Number of IP packets which may be queued up for transmit" );
+module_param( iTEEnable, int, S_IRUGO | S_IWUSR );
+MODULE_PARM_DESC( iTEEnable, "Enable/Disable TE Flow Control" );
 
