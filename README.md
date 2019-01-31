@@ -6,6 +6,28 @@ open source main-line drivers, these are the drivers that will be used.
 This is *NOT* the official repository.  Since I do not have access to the official code repository,
 this repo was built from source tar-ball releases.
 
+## Building on Ubuntu 16.04
+
+Add the following entries to the "/etc/modprobe.d/blacklist-modem.conf" file:
+
+```bash
+blacklist qcserial
+blacklist qmi_wwan
+```
+
+Building:
+
+```bash
+# install dependancies
+sudo apt-get install build-essential make gcc
+sudo apt-get install linux-headers=`uname -r`
+
+cd GobiSerial; make; sudo make install
+cd GobiNet; make; sudo make install
+sudo modprobe GobiSerial
+sudo modprobe GobiNet
+```
+
 ## Sierra Provided Drivers
 
 Each release has been imported as a commit, so you can see what has changed from version to version.  The release
