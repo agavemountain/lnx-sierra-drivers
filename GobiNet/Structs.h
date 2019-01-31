@@ -363,9 +363,18 @@ typedef struct {
   u32 tx_overflows;
 } sNetStats;
 
+#define IPV6_ADDR_LEN 16
+typedef struct ipv6_addr
+{
+   u8         ipv6addr[IPV6_ADDR_LEN];
+   u8         prefix;
+}__attribute__((__packed__)) ipv6_addr;
+
+
 typedef struct {
     u8 instance;
     unsigned int ipAddress;
+    ipv6_addr    ipV6Address;
 } sQMuxIPTable;
 
 typedef struct gobi_qmimux_hdr{
@@ -397,6 +406,17 @@ typedef struct qmap_ipv4_header
    unsigned int dst_address;
 } __attribute__ ((aligned (1))) *qmap_ipv4_header_t;
 
+typedef struct qmap_ipv6_header
+{
+   unsigned int version:4;
+   unsigned int traffic_class:8;
+   unsigned int flow_label:20;
+   unsigned short length;
+   unsigned char next_header;
+   unsigned char hop_limit;
+   unsigned char src_address[16];
+   unsigned char dst_address[16];
+} __attribute__ ((aligned (1))) *qmap_ipv6_header_t;
 
 enum{
    eDataMode_Unknown=-1,
@@ -502,8 +522,13 @@ typedef struct sGobiUSBNet
    int iQMUXEnable;
    int nRmnet;
    int iMaxMuxID;
+   int iPacketInComplete;
+   struct sk_buff *pLastSKB;
    struct net_device *pNetDevice[MAX_MUX_NUMBER_SUPPORTED];
    sQMuxIPTable      qMuxIPTable[MAX_MUX_NUMBER_SUPPORTED];
+   u32 ULDatagramSize;
+   u32 ULDatagram;
+   int iIPAlias;
 } sGobiUSBNet;
 
 /*=========================================================================*/

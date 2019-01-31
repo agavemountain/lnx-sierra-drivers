@@ -36,11 +36,17 @@ MARVELL_CCPREFIX := ~/toolchain/qmi_mxwell/toolchain/bin/arm-none-linux-gnueabi-
 M64_KDIR := ~/toolchain/arm64bit/linux/linux-4.4.1-devel-16.04.1
 M64_CCPREFIX := ~/toolchain/arm64bit/be/aarch64ebv8-marvell-linux-gnu-5.2.1_x86_64_20151117/bin/aarch64_be-marvell-linux-gnu-
 
+PPC_KDIR := ~/toolchain/ppc/kernel_ppc
+PPC_CCPREFIX :=~/toolchain/ppc/fsl/1.1/sysroots/i686-fslsdk-linux/usr/bin/ppc64e5500-fsl-linux/powerpc64-fsl-linux-
+
 all:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 m64:
 	$(MAKE) ARCH=arm64 CROSS_COMPILE=${M64_CCPREFIX} -C $(M64_KDIR) M=$(PWD) modules
+
+ppc:
+	$(MAKE) ARCH=powerpc CROSS_COMPILE=${PPC_CCPREFIX} -C $(PPC_KDIR) M=$(PWD) modules
 
 marvell:
 	$(MAKE) ARCH=arm CROSS_COMPILE=${MARVELL_CCPREFIX} -C $(MARVELL_KDIR) M=$(PWD) modules

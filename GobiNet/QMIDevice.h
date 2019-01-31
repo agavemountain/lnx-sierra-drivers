@@ -160,6 +160,15 @@ void PrintHex(
    void *         pBuffer,
    u16            bufSize );
 
+// Print Hex data, for QMAP debug purposes
+void NetHex(
+   void *      pBuffer,
+   u16         bufSize );
+// Print Hex data, for QMAP purposes
+void ErrHex(
+   void *         pBuffer,
+   u16            bufSize );
+
 // Sets mDownReason and turns carrier off
 void GobiSetDownReason(
    sGobiUSBNet *    pDev,
@@ -494,3 +503,21 @@ struct net_device * gobi_qmimux_register_device(struct net_device *real_dev,int 
 int iIsValidQmuxSKB(struct sk_buff *skb);
 //Get MUX ID from skb
 int iGetQmuxIDFromSKB(struct sk_buff *skb);
+//Get Number of QMAP framed Packet In SKB
+int iNumberOfQmuxPacket(struct sk_buff *skb,int iDisplay);
+//Check SKB packet is QMAP framed.
+int iIsQmuxPacketComplete(struct sk_buff *skb);
+//Check NULL QMAP framed packet
+int iIsQmuxZeroPacket(struct sk_buff *skb);
+//Print QMAP Framed packet.
+int PrintQmuxPacket(struct sk_buff *skb);
+//Get QMAP framed packet length.
+u32 u32GetSKBQMAPPacketLength(struct sk_buff *skb,int iOffset);
+//Check QMAP header in SKB.
+int iIsValidQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset);
+//Check NULL QMAP header in SKB.
+int iIsZeroQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset);
+//Check Command QMAP header in SKB.
+int iIsCMDQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset);
+
+

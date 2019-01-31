@@ -176,7 +176,7 @@ extern int iQMUXEnable;
 static inline bool IsDeviceValid( sGobiUSBNet * pDev );
 
 #define CLIENT_READMEM_SNAPSHOT(clientID, pdev)\
-   if( debug == 1 && clientmemdebug )\
+   if( (debug & DEBUG_QMI) && clientmemdebug )\
    {\
       sClientMemList *pclnt;\
       sReadMemList *plist;\
@@ -229,6 +229,7 @@ void gobi_try_wake_up_process(struct task_struct * pTask);
 #define IOCTL_QMI_SET_DEVICE_MTU 0x8BE0 + 14
 #define IOCTL_QMI_GET_QMAP_SUPPORT 0x8BE0 + 15
 #define IOCTL_QMI_SET_IP_ADDRESS   0x8BE0 + 16
+#define IOCTL_QMI_SET_IPV6_ADDRESS   0x8BE0 + 17
 
 // CDC GET_ENCAPSULATED_RESPONSE packet
 #define CDC_GET_ENCAPSULATED_RESPONSE_LE 0x01A1ll
@@ -303,7 +304,7 @@ static int gobi_qmimux_open(struct net_device *dev)
 
 static int gobi_qmimux_stop(struct net_device *dev)
 {
-   DBG("\n");
+   NETDBG("\n");
    netif_carrier_off(dev);
    return 0;
 }
@@ -319,13 +320,13 @@ struct sk_buff *GobiNetDriverQmuxTxFixup(
    {
 
       // Skip Ethernet header from message
-      DBG( "Before sending to device modified: Len:0x%x",pSKB->len);
-      PrintHex (pSKB->data, pSKB->len);
+      NETDBG( "Before sending to device modified: Len:0x%x",pSKB->len);
+      NetHex (pSKB->data, pSKB->len);
       return pSKB;
    }
    else
    {
-      DBG( "Packet Dropped Length");
+      NETDBG( "Packet Dropped Length");
    }
 
    // Filter the packet out, release it
@@ -342,8 +343,8 @@ static netdev_tx_t gobi_qmimux_start_xmit(struct sk_buff *skb, struct net_device
    skb->dev = priv->real_dev;
    if(dev->type == ARPHRD_ETHER)
    {
-      DBG("Remove ETH Header\n");
-      PrintHex (skb->data, skb->len);
+      NETDBG("Remove ETH Header\n");
+      NetHex (skb->data, skb->len);
       skb_pull(skb,ETH_HLEN);
       hdr = (struct gobi_qmimux_hdr *)skb_push(skb, sizeof(struct gobi_qmimux_hdr));
       len = skb->len - sizeof(struct gobi_qmimux_hdr);
@@ -366,16 +367,16 @@ static netdev_tx_t gobi_qmimux_start_xmit(struct sk_buff *skb, struct net_device
    hdr->mux_id = priv->mux_id;
    hdr->pkt_len = cpu_to_be16(len);
    skb->dev = priv->real_dev;
-   DBG("mux_id:0x%x\n",priv->mux_id);
+   NETDBG("mux_id:0x%x\n",priv->mux_id);
    if(iIsValidQmuxSKB(skb)==0)
    {
-      DBG( "Invalid Packet\n" );
+      NETDBG( "Invalid Packet\n" );
       return NETDEV_TX_BUSY;
    }
    skb = GobiNetDriverQmuxTxFixup( skb, GFP_ATOMIC,priv->mux_id);
    if (skb == NULL)
    {
-      DBG( "unable to tx_fixup skb\n" );
+      NETDBG( "unable to tx_fixup skb\n" );
       return NETDEV_TX_BUSY;
    }
    dev->stats.tx_packets++;
@@ -703,7 +704,7 @@ void PrintHex(
    u16 pos;
    int status;
 
-   if (debug != 1)
+   if (!(debug & DEBUG_QMI))
    {
        return;
    }
@@ -2038,9 +2039,12 @@ int ReadSync(
             else
             *iID = -__LINE__;
          }
-         flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
-         RemoveAndPopNotifyList(pDev,clientID,transactionID,eClearCID);
-         LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+         if(result!=-EINTR)
+         {
+             flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
+             RemoveAndPopNotifyList(pDev,clientID,transactionID,eClearCID);
+             LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+         }
          return result;//-EFAULT;EINTR resume error
       }
       if(*iID<-1)
@@ -3343,6 +3347,68 @@ int map_mux_id_to_ipv4(
     return 0;
 }
 
+int iIsZeroIPv6Addr(ipv6_addr *pAddr)
+{
+   if(pAddr)
+   {
+      int i = 0;
+      for(i=0;i<IPV6_ADDR_LEN;i++)
+      {
+         if(pAddr->ipv6addr[i]!=0)
+            return 0;
+      }
+   }
+   return 1;
+}
+
+int map_mux_id_to_ipv6(
+   sGobiUSBNet *pDev,
+   unsigned long arg )
+{
+    int idx;
+    int status;
+    sQMuxIPTable table;
+    if (arg == 0)
+    {
+        DBG( "Bad IP Table IOCTL buffer\n" );
+        return -EINVAL;
+    }
+    status = copy_from_user( &table, (void*)arg, sizeof(table) );
+    if (status != 0)
+    {
+        DBG( "Unable to copy data from userspace %d\n", status );
+        return -EINVAL;
+    }
+
+    idx = table.instance - MUX_ID_START;
+
+    /* a little bit difference between sQMuxIPTable and arg, arg passed from user space is mux id 
+       and ip address, but instance of sQMuxIPTable is the index from 0 to MAX_MUX_NUMBER_SUPPORTED-1,
+       so the difference is the MUX_ID_START offset */
+    if (
+            ( idx >= MAX_MUX_NUMBER_SUPPORTED ) ||
+            ( idx < 0 )
+       )
+    {
+        DBG( "invalid indexing muxid to ipv6 table: %d\n", idx);
+        return -EINVAL;
+    }
+
+    pDev->qMuxIPTable[idx].instance = idx;
+    if ( iIsZeroIPv6Addr(&table.ipV6Address)==1 )
+    {
+        memset(&pDev->qMuxIPTable[idx].ipV6Address , 0,sizeof(ipv6_addr));
+    }
+    else 
+    {
+        memcpy(&pDev->qMuxIPTable[idx].ipV6Address,&table.ipV6Address,sizeof(ipv6_addr));
+    }
+
+    NETDBG(" Set IP Address Mux ID : 0x%02x\n", table.instance);
+    PrintIPV6Addr( &table.ipV6Address);
+    return 0;
+}
+
 /*=========================================================================*/
 // Internal userspace wrappers
 /*=========================================================================*/
@@ -3854,6 +3920,8 @@ long UserspaceunlockedIOCTL(
           }
          case IOCTL_QMI_SET_IP_ADDRESS:
             return map_mux_id_to_ipv4(pFilpData->mpDev, arg);
+         case IOCTL_QMI_SET_IPV6_ADDRESS:
+            return map_mux_id_to_ipv6(pFilpData->mpDev, arg);
       default:
          return -EBADRQC;
    }
@@ -7161,9 +7229,18 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control , int iqmuxenab
                                  &pReadBuffer,
                                  &readBufferSize ) == true)
          {
+            u32 *pULDatagram = NULL;
+            u32 *pULDatagramSize = NULL;
+            if(iqmuxenable)
+            {
+               pULDatagram = &pDev->ULDatagram;
+               pULDatagramSize = &pDev->ULDatagramSize;
+            }
             result = QMIWDASetDataFormatResp(pReadBuffer,
                                                   readBufferSize,
-                                                  pDev->iDataMode);
+                                                  pDev->iDataMode,
+                                                  pULDatagram,
+                                                  pULDatagramSize);
             // We don't care about the result
             if(pReadBuffer)
             kfree( pReadBuffer );
@@ -8124,19 +8201,32 @@ void gobi_qmimux_unregister_device(struct net_device *dev)
 
 int iIsValidQmuxSKB(struct sk_buff *skb)
 {
+   if(!skb)
+      return 0;
+   if(skb->len >= QMUX_HEADER_LENGTH)
+   {
+      return iNumberOfQmuxPacket(skb,0);
+   }
+   return 0;
+}
+
+int PrintQmuxPacket(struct sk_buff *skb)
+{
+   unsigned int offset=0;
+   return 0;
+   NETDBG("SKB->len:%d\n",skb->len);
    if(skb->len >= QMUX_HEADER_LENGTH)
    {
       u32 length = skb->data[2];
       length = (length<<8) + skb->data[3];
       //To Fix Incomming packet larger than expected.
-      if(length<=(skb->len-QMUX_HEADER_LENGTH))//if(length==(skb->len-QMUX_HEADER_LENGTH))//
+      if(length==(skb->len-QMUX_HEADER_LENGTH))
       {
-         if((skb->data[0]<0x04)
-         &&(skb->data[1]&0x8F))
+         if(iIsValidQMAPHeaderInSKBData(skb,0)==1)
          {
             return 1;
          }
-         else if((skb->data[0]<0x04)
+         else if((skb->data[0]<0x80)
          &&(skb->data[1]==0))
          {
             return 1;
@@ -8145,14 +8235,214 @@ int iIsValidQmuxSKB(struct sk_buff *skb)
          {
             PrintHex (skb->data, skb->len);
          }
+         return 0;
+      }
+      else if(length<(skb->len-QMUX_HEADER_LENGTH))//
+      {
+         int iNumberOfPacket=1;
+         offset += length + QMUX_HEADER_LENGTH;
+         do
+         {
+            length = skb->data[offset+2];
+            length = (length<<8) + skb->data[offset+3];
+            if((skb->data[offset]!=0)&&(skb->data[offset+1]!=0)&&
+               (skb->data[offset+2]!=0)&&(skb->data[offset+3]!=0))
+            {
+               NETDBG("offset:%d, %02X%02X%02X%02X:length:%d\n",
+                  offset,
+               skb->data[offset],skb->data[offset+1],skb->data[offset+2],skb->data[offset+3]
+               ,length);
+            }
+            if(length==0)
+            {
+               if((skb->data[offset]<0x80)
+               &&(skb->data[offset+1]&0x8F))
+               {
+                  iNumberOfPacket++;
+               }
+               else if((skb->data[offset]<0x80)
+                  &&(skb->data[offset+1]==0))
+               {
+                  iNumberOfPacket++;
+               }
+               else
+               {
+                  return iNumberOfPacket;
+               }
+               if((length+offset)==(skb->len-QMUX_HEADER_LENGTH))
+               {
+                  return iNumberOfPacket;
+               }
+            }
+            offset += length +QMUX_HEADER_LENGTH;
+         }while(offset < skb->len);
+         NETDBG("\niNumberOfPacket:%d\n",iNumberOfPacket);
+         return iNumberOfPacket;
       }
       else
       {
-         DBG("Length Not matched.\n");
+         NETDBG("Length Not matched.\n");
       }
    }
    return 0;
 }
+
+int iIsQmuxZeroPacket(struct sk_buff *skb)
+{
+   if(skb==NULL)
+      return 0;
+   if(skb->len >= QMUX_HEADER_LENGTH)
+   {
+      u32 length = skb->data[2];
+      length = (length<<8) + skb->data[3];
+      if(length==0)
+      {
+         if((skb->data[0]==0)
+         &&(skb->data[1]==0))
+         {
+            return 1;
+         }
+      }
+   }
+   return 0;
+}
+
+int iIsQmuxPacketComplete(struct sk_buff *skb)
+{
+   if(skb==NULL)
+      return 0;
+   if(skb->len >= QMUX_HEADER_LENGTH)
+   {
+      u32 length = skb->data[2];
+      length = (length<<8) + skb->data[3];
+      if(length==(skb->len-QMUX_HEADER_LENGTH))
+      {
+         if(iIsValidQMAPHeaderInSKBData(skb,0)==1)
+         {
+            return 1;
+         }
+      }
+      else if(length<=(skb->len-QMUX_HEADER_LENGTH))//
+      {
+         if(iIsValidQMAPHeaderInSKBData(skb,0)==1)
+         {
+            return 1;
+         }
+      }
+      else
+      {
+         DBG("Length Not matched.\n");
+         if(iIsValidQMAPHeaderInSKBData(skb,0)==1)
+         {
+            return 0;
+         }
+      }
+   }
+   return 0;
+}
+
+int iNumberOfQmuxPacket(struct sk_buff *skb,int iDisplay)
+{
+   unsigned int offset=0;
+   if(!skb)
+      return 0;
+   if(iDisplay==1)
+   {
+      DBG("Packet Len: 0x%x\n",skb->len);
+      PrintHex(skb->data,skb->len);
+   }
+   if(skb->len >= QMUX_HEADER_LENGTH)
+   {
+      //To Fix Incomming packet larger than expected.
+      u32 length = skb->data[2];
+      length = (length<<8) + skb->data[3];
+      if(length==(skb->len-QMUX_HEADER_LENGTH))
+      {
+         if(iIsValidQMAPHeaderInSKBData(skb,0)==1)
+         {
+            return 1;
+         }
+         else
+         {
+            PrintHex (skb->data, skb->len);
+         }
+         NETDBG("Single Packet:");
+         NetHex(skb->data,4);
+         return 0;
+      }
+      else if(length<(skb->len-QMUX_HEADER_LENGTH))//
+      {
+         int iNumberOfPacket=1;         
+         if(iIsValidQMAPHeaderInSKBData(skb,0)==1)
+         {
+            iNumberOfPacket=1;
+            NETDBG("%d. Packet: %02X%02X %02X%02X .. \n",iNumberOfPacket ,
+               skb->data[offset],
+               skb->data[offset+1],
+               skb->data[offset+2],
+               skb->data[offset+3]);
+         }
+         else
+         {
+            NETDBG("%s:%d Invalid QMAP Packet\n",__FUNCTION__,__LINE__);
+               NETDBG("%d. Packet: %02X%02X %02X%02X .. \n",0,
+               skb->data[offset],
+               skb->data[offset+1],
+               skb->data[offset+2],
+               skb->data[offset+3]);
+            return 0;
+         }
+         offset += length + QMUX_HEADER_LENGTH;
+         do
+         {
+            NETDBG("%d. Packet: %02X%02X %02X%02X .. \n",iNumberOfPacket+1,
+               skb->data[offset],
+               skb->data[offset+1],
+               skb->data[offset+2],
+               skb->data[offset+3]);
+            length = skb->data[offset+2];
+            length = (length<<8) + skb->data[offset+3];
+            NETDBG("iNumberOfPacket:%d, offset:%d/%d len:0x%x\n",
+               iNumberOfPacket,offset
+                  ,skb->len
+                  ,length)
+            if(length>skb->len-offset-QMUX_HEADER_LENGTH)
+            {
+               NETDBG("iNumberOfPacket:%d, offset:%d/%d delta:0x%x\n",
+                  iNumberOfPacket,offset
+                  ,skb->len
+                  ,length-(skb->len-offset-QMUX_HEADER_LENGTH));
+               return iNumberOfPacket;
+            }
+            offset += length +QMUX_HEADER_LENGTH;
+            iNumberOfPacket++;
+         }while(offset < skb->len);
+         return iNumberOfPacket;
+      }
+      else
+      {
+         NETDBG("Length Not matched.\n");
+         NETDBG("Incomplete QMAP Packet %s:%d\n",__FUNCTION__,__LINE__);
+         if(iIsValidQMAPHeaderInSKBData(skb,0)==1)
+         {
+            NETDBG("%d. Packet: %02X%02X %02X%02X .. \n",0,
+               skb->data[offset],
+               skb->data[offset+1],
+               skb->data[offset+2],
+               skb->data[offset+3]);
+            return 0;
+         }
+         NETDBG("Unknown Packet: %02X%02X %02X%02X .. \n",
+               skb->data[offset],
+               skb->data[offset+1],
+               skb->data[offset+2],
+               skb->data[offset+3]);
+         return -1;
+      }
+   }
+   return -1;
+}
+
 /***********************************
          0 - Request, i.e., sender is sending a 
              QMAP control command to the receiver.
@@ -8172,5 +8462,210 @@ int iGetQmuxIDFromSKB(struct sk_buff *skb)
       return (int)skb->data[1];
    }
    return -1;
+}
+
+u32 u32GetSKBQMAPPacketLength(struct sk_buff *skb,int iOffset)
+{
+   if(skb==NULL)      
+      return 0;
+   if(skb->len < QMUX_HEADER_LENGTH)   
+   {      
+      return 0;   
+   }
+   else if(iOffset>skb->len)
+   {
+      return 0;
+   }
+   else   
+   {      
+      u32 length = skb->data[iOffset+2];
+      length = (length<<8) + skb->data[iOffset+3];
+      return length;   
+   }   
+   return 0;
+}
+
+int iIsValidQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset)
+{
+   if(iOffset<0)
+      return 0;
+   if(!pSKB)
+      return 0;
+   if(pSKB->len<QMUX_HEADER_LENGTH)
+   {
+      return 0;
+   }
+   if(pSKB->len<iOffset +QMUX_HEADER_LENGTH)
+   {
+      return 0;
+   }
+   if((pSKB->data[iOffset+1]&0x8F)||
+      (pSKB->data[iOffset+1]==0x00))
+   {
+      switch(pSKB->data[iOffset])
+      {
+         case 0x00:
+         case 0x01:
+         case 0x02:
+         case 0x03:
+         case 0x04:
+            return 1;
+         default:
+            return 0;
+      }
+   }
+   return 0;
+}
+
+int iIsCMDQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset)
+{
+   u32 length = 0;
+   if(iOffset<0)
+      return 0;
+   if(!pSKB)
+      return 0;
+   if(pSKB->len<QMUX_HEADER_LENGTH)
+   {
+      return 0;
+   }
+   length = u32GetSKBQMAPPacketLength(pSKB,iOffset);
+   if(pSKB->len < length)
+   {
+      return 0;
+   }
+   if(pSKB->data[iOffset]==0x80)
+   {
+      return 1;
+   }
+   return 0;
+}
+
+
+int iIsZeroQMAPHeaderInSKBData(struct sk_buff *pSKB, int iOffset)
+{
+   if(iOffset<0)
+      return 0;
+   if(!pSKB)
+      return 0;
+   if(pSKB->len<QMUX_HEADER_LENGTH)
+   {
+      return 0;
+   }
+   if(pSKB->len!=iOffset +QMUX_HEADER_LENGTH)
+   {
+      return 0;
+   }
+   if((pSKB->data[iOffset]==0x00)
+         &&(pSKB->data[iOffset+1]==0x00)
+         &&(pSKB->data[iOffset+2]==0x00)
+         &&(pSKB->data[iOffset+3]==0x00))
+   {
+      return 1;
+   }
+   return 0;
+}
+
+/*===========================================================================
+METHOD:
+   NetHex (Public Method)
+
+DESCRIPTION:
+   Print Hex data, for QMAP debug purposes
+
+PARAMETERS:
+   pBuffer       [ I ] - Data buffer
+   bufSize       [ I ] - Size of data buffer
+
+RETURN VALUE:
+   None
+===========================================================================*/
+void NetHex(
+   void *      pBuffer,
+   u16         bufSize )
+{
+   char * pPrintBuf;
+   u16 pos;
+   int status;
+   if(!(debug & DEBUG_NETMASK))
+      return ;
+   if(bufSize==(u16)(-1))
+   {
+       DBG( "No Data\n" );
+   }
+   pPrintBuf = kmalloc( bufSize * 3 + 1, GFP_ATOMIC );
+   if (pPrintBuf == NULL)
+   {
+      DBG( "Unable to allocate buffer\n" );
+      return;
+   }
+   memset( pPrintBuf, 0 , bufSize * 3 + 1 );
+   for (pos = 0; pos < bufSize; pos++)
+   {
+      status = snprintf( (pPrintBuf + (pos * 3)),
+                         4,
+                         "%02X ",
+                         *(u8 *)(pBuffer + pos) );
+      if (status != 3)
+      {
+         DBG( "snprintf error %d\n", status );
+         kfree( pPrintBuf );
+         return;
+      }
+   }
+   printk( "   : %s\n", pPrintBuf );
+   kfree( pPrintBuf );
+   pPrintBuf = NULL;
+   return;
+}
+
+/*===========================================================================
+METHOD:
+   ErrHex (Public Method)
+
+DESCRIPTION:
+   Print Hex data, for QMAP debug purposes
+
+PARAMETERS:
+   pBuffer       [ I ] - Data buffer
+   bufSize       [ I ] - Size of data buffer
+
+RETURN VALUE:
+   None
+===========================================================================*/
+void ErrHex(
+   void *      pBuffer,
+   u16         bufSize )
+{
+   char * pPrintBuf;
+   u16 pos;
+   int status;
+   if(bufSize==(u16)(-1))
+   {
+       DBG( "No Data\n" );
+   }
+   pPrintBuf = kmalloc( bufSize * 3 + 1, GFP_ATOMIC );
+   if (pPrintBuf == NULL)
+   {
+      DBG( "Unable to allocate buffer\n" );
+      return;
+   }
+   memset( pPrintBuf, 0 , bufSize * 3 + 1 );
+   for (pos = 0; pos < bufSize; pos++)
+   {
+      status = snprintf( (pPrintBuf + (pos * 3)),
+                         4,
+                         "%02X ",
+                         *(u8 *)(pBuffer + pos) );
+      if (status != 3)
+      {
+         DBG( "snprintf error %d\n", status );
+         kfree( pPrintBuf );
+         return;
+      }
+   }
+   printk( "   : %s\n", pPrintBuf );
+   kfree( pPrintBuf );
+   pPrintBuf = NULL;
+   return;
 }
 

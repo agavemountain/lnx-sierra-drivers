@@ -103,15 +103,27 @@ POSSIBILITY OF SUCH DAMAGE.
 /*=========================================================================*/
 // Definitions
 /*=========================================================================*/
+#define DEBUG_QMI         1
+#define DEBUG_NETMASK     DEBUG_QMI << 1
 
+extern int netdebug;
 extern int debug;
 extern int qos_debug;
+
 // DBG macro
 #define DBG( format, arg... )\
-if(debug == 1)\
+if(debug & DEBUG_QMI)\
 {\
       printk( KERN_INFO "GobiNet::%s(%d) " format, __FUNCTION__,task_pid_nr(current), ## arg );\
 }
+
+//QMAP DBG macro
+#define NETDBG( format, arg... )\
+if(debug & DEBUG_NETMASK)\
+{\
+      printk( KERN_INFO "GobiNet::%s(%d) " format, __FUNCTION__,task_pid_nr(current), ## arg );\
+}
+
 #define QDBG( format, arg... )\
 if(qos_debug == 1)\
 {\
@@ -179,6 +191,9 @@ if(qos_debug == 1)\
 #define MAX_TASK_ID 16
 
 #define QMUX_HEADER_LENGTH 4
+
+#define QMAP_SIZE_OF_RX_BUFFER 32768
+
 //Register State
 enum {
    eStatRegister=0,
@@ -415,7 +430,9 @@ int QMIDMSGetMEIDResp(
 int QMIWDASetDataFormatResp(
    void *   pBuffer,
    u16      buffSize,
-   int      iDataMode);
+   int      iDataMode,
+   u32 *    ULDatagram,
+   u32 *    ULDatagramSize);
 
 // Parse the QMI Set Data Format Resp
 int QMICTLSetDataFormatResp(
@@ -476,3 +493,6 @@ enum{
 
 #define GOBI_GFP_ATOMIC     GFP_ATOMIC|GFP_NOWAIT
 #define GOBI_GFP_KERNEL     GFP_KERNEL|GFP_NOWAIT
+
+void PrintIPV6Addr(ipv6_addr * addr);
+int iIsZeroIPv6Addr(ipv6_addr *pAddr);
