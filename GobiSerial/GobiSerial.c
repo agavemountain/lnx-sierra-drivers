@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2018-10-26/SWI_2.35"
+#define DRIVER_VERSION "2018-12-21/SWI_2.36"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -1014,9 +1014,16 @@ int GobiOpen(
       int count = 0;
       if(portdata->iGPSStartState == eSendUnknown)
       {
-        if(jiffies<portdata->ulExpires)
+        unsigned long now = jiffies;
+        if(now < portdata->ulExpires)
         {
-           unsigned long diff = jiffies_to_msecs(portdata->ulExpires-jiffies);
+           unsigned long diff = jiffies_to_msecs(portdata->ulExpires-now);
+           //Not wait more then delay_open_gps_port Seconds.
+           if( diff > (delay_open_gps_port*1000))
+           {
+              DBG("Overwrite DELAY %lu msec\n",diff);
+              diff = delay_open_gps_port*1000;
+           }
            DBG("DELAY %lu msec\n",diff);
            if(diff > 0)
            msleep(diff);
@@ -1688,20 +1695,32 @@ static int Gobi_write(struct tty_struct *pTTY, struct usb_serial_port *pPort,
    struct usb_serial *pSerial;
    struct usb_host_endpoint *ep;
    struct sierra_port_private *portdata;
-   if(pPort)
+   if( (pPort) && 
+       (pPort->serial) && 
+       (pPort->serial->interface) )
    {
       if(pPort->serial->interface->cur_altsetting->desc.bInterfaceNumber!=0)
       {
          return result;
       }
    }
+   else
+   {
+      return -ENODEV;
+   }
    pSerial = pPort->serial;
-   if(pSerial)
+   if( (pSerial) && 
+       (pSerial->dev) &&
+       (pSerial->dev->actconfig) )
    {
       if(pSerial->dev->actconfig->desc.bNumInterfaces!=1)
       {
          return result;
       }
+   }
+   else
+   {
+      return -ENODEV;
    }
    portdata = usb_get_serial_port_data(pPort);
    if(portdata)
@@ -1712,7 +1731,8 @@ static int Gobi_write(struct tty_struct *pTTY, struct usb_serial_port *pPort,
          {
             int pipe=0, len=0, size=0;
             ep = usb_pipe_endpoint(pSerial->dev, pipe);
-            if (!(count % usb_endpoint_maxp(&ep->desc)))
+            if( (ep) &&
+                (!(count % usb_endpoint_maxp(&ep->desc))) )
             {
                pipe = usb_sndbulkpipe(pSerial->dev, pPort->bulk_out_endpointAddress);
                gobi_usb_bulk_msg(pSerial->dev, pipe, NULL, size,
