@@ -495,8 +495,8 @@ typedef struct sGobiUSBNet
    u16 WDSClientID;
    int iNetLinkStatus;
    int iDataMode;
-   struct mutex urb_lock;
-   struct mutex notif_lock;
+   spinlock_t urb_lock;
+   spinlock_t notif_lock;
    int iUSBState;
    int iDeviceMuxID;
    int iQMUXEnable;

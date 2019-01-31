@@ -137,7 +137,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-09-05/SWI_2.46"
+#define DRIVER_VERSION "2017-09-15/SWI_2.47"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -1671,7 +1671,7 @@ static int GobiUSBNetAutoPMThread( void * pData )
       }
 
       // Submit URB
-      status = usb_submit_urb( pAutoPM->mpActiveURB, GFP_KERNEL );
+      status = usb_submit_urb( pAutoPM->mpActiveURB, GOBI_GFP_KERNEL );
       if (status < 0)
       {
          // Could happen for a number of reasons
@@ -1775,7 +1775,7 @@ int GobiUSBNetStartXmit(
       info = pDev->driver_info;
       if (info->tx_fixup)
       {
-         pSKB = info->tx_fixup( pDev, pSKB, GFP_ATOMIC);
+         pSKB = info->tx_fixup( pDev, pSKB, GOBI_GFP_ATOMIC);
          if (pSKB == NULL)
          {
             DBG( "unable to tx_fixup skb\n" );
@@ -1784,7 +1784,7 @@ int GobiUSBNetStartXmit(
       }
    }
    // Allocate URBListEntry
-   pURBListEntry = kmalloc( sizeof( sURBList ), GFP_ATOMIC );
+   pURBListEntry = kmalloc( sizeof( sURBList ), GOBI_GFP_ATOMIC );
    if (pURBListEntry == NULL)
    {
       DBG( "unable to allocate URBList memory\n" );
@@ -1795,7 +1795,7 @@ int GobiUSBNetStartXmit(
    pURBListEntry->mpNext = NULL;
 
    // Allocate URB
-   pURBListEntry->mpURB = usb_alloc_urb( 0, GFP_ATOMIC );
+   pURBListEntry->mpURB = usb_alloc_urb( 0, GOBI_GFP_ATOMIC );
    if (pURBListEntry->mpURB == NULL)
    {
       DBG( "unable to allocate URB\n" );
@@ -1807,7 +1807,7 @@ int GobiUSBNetStartXmit(
       return NETDEV_TX_BUSY; 
    }
    // Allocate URB transfer_buffer
-   pURBData = kmalloc( pSKB->len, GFP_ATOMIC );
+   pURBData = kmalloc( pSKB->len, GOBI_GFP_ATOMIC );
    if (pURBData == NULL)
    {
       DBG( "unable to allocate URB data\n" );
@@ -2554,7 +2554,7 @@ int GobiUSBNetProbe(
       return -ENXIO;
    }
    usbnet_stop(pDev->net);
-   pGobiDev = kzalloc( sizeof( sGobiUSBNet ), GFP_KERNEL );
+   pGobiDev = kzalloc( sizeof( sGobiUSBNet ), GOBI_GFP_KERNEL );
    if (pGobiDev == NULL)
    {
       DBG( "falied to allocate device buffers" );
@@ -2584,7 +2584,7 @@ int GobiUSBNetProbe(
    pDev->net->hard_start_xmit = GobiUSBNetStartXmit;
    pDev->net->tx_timeout = GobiUSBNetTXTimeout;
 #else
-   pNetDevOps = kmalloc( sizeof( struct net_device_ops ), GFP_KERNEL );
+   pNetDevOps = kmalloc( sizeof( struct net_device_ops ), GOBI_GFP_KERNEL );
    if (pNetDevOps == NULL)
    {
       DBG( "falied to allocate net device ops" );
@@ -2747,8 +2747,8 @@ int GobiUSBNetProbe(
    }
    sema_init( &(pGobiDev->taskIDSem), SEMI_INIT_DEFAULT_VALUE );
 
-   mutex_init(&(pGobiDev->urb_lock));
-   mutex_init(&(pGobiDev->notif_lock));
+   spin_lock_init(&(pGobiDev->urb_lock));
+   spin_lock_init(&(pGobiDev->notif_lock));
    pGobiDev->task=NULL;
    ClearTaskID(true,pGobiDev);
    pGobiDev->mIs9x15= is9x15;
@@ -3029,7 +3029,7 @@ int gobi_dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
 {
    struct sk_buff *nskb;
    int result = 0;
-   nskb = skb_copy(skb, GFP_ATOMIC); 
+   nskb = skb_copy(skb, GOBI_GFP_ATOMIC); 
    nskb->dev = dev;
    secpath_reset(nskb);
    skb_dst_drop(nskb);
