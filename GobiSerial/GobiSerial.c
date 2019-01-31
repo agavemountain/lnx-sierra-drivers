@@ -89,7 +89,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2015-05-13/SWI_2.24"
+#define DRIVER_VERSION "2015-08-27/SWI_2.25"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -135,6 +135,11 @@ static int nNumInterfaces;
    { \
       printk( KERN_INFO "GobiSerial::%s " format, __FUNCTION__, ## arg ); \
    } \
+   
+struct gobi_serial_intf_private {
+       spinlock_t susp_lock;
+       unsigned int suspended:1;
+};
 
 /*=========================================================================*/
 // Function Prototypes
@@ -182,6 +187,10 @@ static void GobiReadBulkCallback( struct urb * pURB );
 int GobiSerialSuspend(
    struct usb_interface *     pIntf,
    pm_message_t               powerEvent );
+int GobiUSBSerialSuspend(struct usb_serial *serial, pm_message_t message);
+int GobiUSBSerialResume(struct usb_serial *serial);
+int GobiUSBSerialResetResume(struct usb_serial *serial);
+void GobiUSBSerialDisconnect(struct usb_serial * serial);
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,23 ))
 
@@ -189,6 +198,8 @@ int GobiSerialSuspend(
 int GobiSerialResume( struct usb_interface * pIntf );
 
 #endif
+void stop_read_write_urbs(struct usb_serial *serial);
+
 
 #define MDM9X15_DEVICE(vend, prod) \
 	USB_DEVICE(vend, prod), \
@@ -301,12 +312,9 @@ static struct usb_driver GobiDriver =
 #endif
    .id_table   = GobiVIDPIDTable,
 #ifdef CONFIG_PM
-   .suspend    = GobiSerialSuspend,
-#if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,23 ))
-   .resume     = GobiSerialResume,
-#else
-   .resume     = usb_serial_resume,
-#endif
+   .suspend    = usb_serial_suspend,
+   .resume = usb_serial_generic_resume,
+   .reset_resume = usb_serial_generic_resume,
    .supports_autosuspend = true,
 #else
    .suspend    = NULL,
@@ -459,6 +467,8 @@ static void Gobi_release(struct usb_serial *serial)
 
    dev_dbg(&serial->dev->dev, "%s\n", __func__);
 
+   stop_read_write_urbs(serial);
+
    if (serial->num_ports > 0) {
       port = serial->port[0];
       if (port)
@@ -514,6 +524,14 @@ static struct usb_serial_driver gGobiDevice =
    .dtr_rts             = Gobi_dtr_rts,
    .attach              = Gobi_startup,
    .release             = Gobi_release,
+   .disconnect           = GobiUSBSerialDisconnect,
+#ifdef CONFIG_PM
+    .suspend    = GobiUSBSerialSuspend,
+    .resume     = GobiUSBSerialResume,
+     #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,5,0 ))
+    .reset_resume = GobiUSBSerialResetResume,
+    #endif
+ #endif
 };
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,4,0 ))
@@ -550,6 +568,7 @@ static int GobiProbe(
    struct usb_host_endpoint * pEndpoint;
    int endpointIndex;
    int numEndpoints;
+   struct gobi_serial_intf_private *intfdata;
 
    DBG( "\n" );
 
@@ -565,10 +584,22 @@ static int GobiProbe(
       return -EINVAL;
    }
 
+
+   intfdata = kzalloc(sizeof(*intfdata), GFP_KERNEL);
+   if (!intfdata)
+           return -ENOMEM;
+   
+   spin_lock_init(&intfdata->susp_lock);
+   
+   usb_set_serial_data(pSerial, intfdata);
+
    nNumInterfaces = pSerial->dev->actconfig->desc.bNumInterfaces;
    DBG( "Num Interfaces = %d\n", nNumInterfaces );
    nInterfaceNum = pSerial->interface->cur_altsetting->desc.bInterfaceNumber;
    DBG( "This Interface = %d\n", nInterfaceNum );
+   #ifdef CONFIG_PM
+   pSerial->dev->reset_resume = 0;
+   #endif
 
    if (nNumInterfaces == 1)
    {
@@ -1127,7 +1158,7 @@ int GobiSerialSuspend(
    pm_message_t               powerEvent )
 {
    struct usb_serial * pDev;
-
+   DBG( "\n" );
    if (pIntf == 0)
    {
       return -ENOMEM;
@@ -1148,7 +1179,29 @@ int GobiSerialSuspend(
    // Run usb_serial's suspend function
    return usb_serial_suspend( pIntf, powerEvent );
 }
+
+
 #endif /* CONFIG_PM*/
+
+
+static void gobi_stop_rx_urbs(struct usb_serial_port *port)
+{
+        usb_kill_urb(port->interrupt_in_urb);
+}
+
+void stop_read_write_urbs(struct usb_serial *serial)
+{
+        int i;
+        struct usb_serial_port *port;
+
+        /* Stop reading/writing urbs */
+        for (i = 0; i < serial->num_ports; ++i) {
+                port = serial->port[i];
+                gobi_stop_rx_urbs(port);
+        }
+}
+
+
 
 #ifdef CONFIG_PM
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,23 ))
@@ -1218,6 +1271,44 @@ int GobiSerialResume( struct usb_interface * pIntf )
 
 #endif
 #endif /* CONFIG_PM*/
+
+#ifdef CONFIG_PM
+int GobiUSBSerialResetResume(struct usb_serial *serial)
+{
+    DBG( "\n" );
+    return GobiUSBSerialResume(serial);
+}
+
+int GobiUSBSerialResume(struct usb_serial *serial)
+{
+   struct gobi_serial_intf_private *intfdata = usb_get_serial_data(serial);
+   DBG( "\n" );
+   spin_lock_irq(&intfdata->susp_lock);
+   intfdata->suspended = 0;
+   spin_unlock_irq(&intfdata->susp_lock);
+ 
+   return 0;
+}
+
+int GobiUSBSerialSuspend(struct usb_serial *pDev, pm_message_t powerEvent)
+{
+   struct gobi_serial_intf_private *intfdata = usb_get_serial_data(pDev);
+   DBG( "\n" );
+   spin_lock_irq(&intfdata->susp_lock);
+   intfdata->suspended = 1;
+   spin_unlock_irq(&intfdata->susp_lock);
+   stop_read_write_urbs(pDev);
+   return 0;
+}
+#endif
+
+void GobiUSBSerialDisconnect(struct usb_serial *serial)
+{
+   DBG( "\n" );
+   stop_read_write_urbs(serial);
+   return ;
+}
+
 /*===========================================================================
 METHOD:
    GobiInit (Free Method)

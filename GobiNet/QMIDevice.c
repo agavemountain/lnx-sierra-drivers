@@ -135,6 +135,12 @@ const bool clientmemdebug = 0;
 #define USB_WRITE_RETRY (2)
 #define USB_READ_TIMEOUT (500)
 
+enum {
+   eStatRegister=0,
+   eStatUnloading,
+   eStatUnloaded
+};
+
 /* initially all zero */
 int qcqmi_table[MAX_QCQMI];
 
@@ -782,8 +788,9 @@ void IntCallback( struct urb * pIntURB )
       DBG( "IntCallback: Encapsulated Response = 0x%llx\n",
           (*(u64*)pIntURB->transfer_buffer));
 
-      if ((pIntURB->actual_length == 8)
-      &&  ((*(u64*)pIntURB->transfer_buffer & CDCEncRespMask) == CDCEncResp ) )
+      //AR7554RD returned interrupt buffer not matching expected mask
+      //thus, length check only
+      if (pIntURB->actual_length == 8)
 
       {
          // Time to read
@@ -1204,7 +1211,11 @@ int ReadSync(
       DBG( "Invalid device!\n" );
       return -ENXIO;
    }
-
+   if (pDev->mbUnload > eStatUnloading)
+   {
+      DBG( "unloaded\n" );
+      return -EFAULT;
+   }
    // Critical section
    spin_lock_irqsave( &pDev->mQMIDev.mClientMemLock, flags );
 
@@ -1248,6 +1259,17 @@ int ReadSync(
 
       // Wait for notification
       result = down_timeout( &readSem,msecs_to_jiffies(5000));
+      if (IsDeviceValid( pDev ) == false)
+      {
+         DBG( "Invalid device!\n" );
+         return -EFAULT;
+      }
+      if (pDev->mbUnload > eStatUnloading)
+      {
+         DBG( "unloaded\n" );
+         return -EFAULT;
+      }
+      
       if (result != 0)
       {
          DBG( "Interrupted %d\n", result );
@@ -1362,13 +1384,28 @@ int WriteSync(
    for(i=0;i<USB_WRITE_RETRY;i++)
    {
        down_read(&pDev->shutdown_rwsem);
+       if (pDev->mbUnload > eStatUnloading)
+       {
+          DBG( "unloaded\n" );
+          return -EFAULT;
+       }
        result = usb_control_msg( pDev->mpNetDev->udev, usb_sndctrlpipe( pDev->mpNetDev->udev, 0 ),
              SEND_ENCAPSULATED_COMMAND,
              USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
              0, pDev->mpIntf->cur_altsetting->desc.bInterfaceNumber,
              (void*)pWriteBuffer, writeBufferSize,
              USB_WRITE_TIMEOUT );
+       if (pDev->mbUnload > eStatUnloading)
+       {
+          DBG( "unloaded\n" );
+          return -EFAULT;
+       }
        up_read(&pDev->shutdown_rwsem);
+       if (pDev->mbUnload > eStatUnloading)
+       {
+          DBG( "unloaded\n" );
+          return -EFAULT;
+       }
        if (result < 0)
        {
           printk(KERN_WARNING "usb_control_msg failed (%d)", result);
@@ -1382,6 +1419,16 @@ int WriteSync(
        else
        {
            break;
+       }
+       if (IsDeviceValid( pDev ) == false)
+       {
+          DBG( "%s Invalid device!\n" ,__FUNCTION__);
+          return -ENXIO;
+       }
+       if (pDev->mbUnload > eStatUnloading)
+       {
+         DBG( "unloaded\n" );
+         return -EFAULT;
        }
    }
 
@@ -1591,11 +1638,11 @@ bool ReleaseClientID(
    u8 transactionID;
 
    // Is device is still valid?
-   if (IsDeviceValid( pDev ) == false)
+   if (pDev->mbUnload > eStatUnloaded)
    {
-      DBG( "invalid device\n" );
+      DBG( "unloaded\n" );
       return false;
-   }
+   } 
 
    DBG( "releasing 0x%04X\n", clientID );
 
@@ -2163,7 +2210,11 @@ long UserspaceunlockedIOCTL(
    if (IsDeviceValid( pFilpData->mpDev ) == false)
    {
       DBG( "Invalid device! Updating f_ops\n" );
+      #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,19,0 ))
+      pFilp->f_op = pFilp->f_path.dentry->d_inode->i_fop;
+      #else
       pFilp->f_op = pFilp->f_dentry->d_inode->i_fop;
+      #endif
       return -ENXIO;
    }
 
@@ -2589,7 +2640,7 @@ int UserspaceOpen(
    struct file *          pFilp )
 {
    sQMIFilpStorage * pFilpData;
-
+   DBG( "%s\n",__FUNCTION__ );
    // Optain device pointer from pInode
    sQMIDev * pQMIDev = container_of( pInode->i_cdev,
                                      sQMIDev,
@@ -2598,12 +2649,16 @@ int UserspaceOpen(
                                     sGobiUSBNet,
                                     mQMIDev );
 
-   if (IsDeviceValid( pDev ) == false)
+   if (IsDeviceValid( pDev ) == false) 
    {
       DBG( "Invalid device\n" );
       return -ENXIO;
    }
-
+   if(pDev->mbUnload)
+   {
+       DBG( "Unload:%s\n", __FUNCTION__);
+      return -ENXIO;
+   }
    // Setup data in pFilp->private_data
    pFilp->private_data = kmalloc( sizeof( sQMIFilpStorage ), GFP_KERNEL );
    if (pFilp->private_data == NULL)
@@ -2713,14 +2768,13 @@ int UserspaceClose(
          return 0;
       }
    }
-
-   if (IsDeviceValid( pFilpData->mpDev ) == false)
+   
+   if (pFilpData->mpDev->mbUnload > eStatUnloading)
    {
-      DBG( "Invalid device! Updating f_ops\n" );
-      pFilp->f_op = pFilp->f_dentry->d_inode->i_fop;
+      DBG( "unloaded\n" );
       return -ENXIO;
    }
-
+   
    DBG( "0x%04X\n", pFilpData->mClientID );
 
    // Disable pFilpData so they can't keep sending read or write
@@ -2775,10 +2829,18 @@ ssize_t UserspaceRead(
    if (IsDeviceValid( pFilpData->mpDev ) == false)
    {
       DBG( "Invalid device! Updating f_ops\n" );
+      #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,19,0 ))
+      pFilp->f_op = pFilp->f_path.dentry->d_inode->i_fop;
+      #else
       pFilp->f_op = pFilp->f_dentry->d_inode->i_fop;
+      #endif
       return -ENXIO;
    }
-
+   if(pFilpData->mpDev->mbUnload)
+   {
+      DBG( "Unload:%s\n", __FUNCTION__);
+      return -ENXIO;
+   }
    if (pFilpData->mClientID == (u16)-1)
    {
       DBG( "Client ID must be set before reading 0x%04X\n",
@@ -2859,10 +2921,18 @@ ssize_t UserspaceWrite(
    if (IsDeviceValid( pFilpData->mpDev ) == false)
    {
       DBG( "Invalid device! Updating f_ops\n" );
+      #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,19,0 ))
+      pFilp->f_op = pFilp->f_path.dentry->d_inode->i_fop;
+      #else
       pFilp->f_op = pFilp->f_dentry->d_inode->i_fop;
+      #endif
       return -ENXIO;
    }
-
+    if(pFilpData->mpDev->mbUnload)
+   {
+      DBG( "Unload:%s\n", __FUNCTION__);
+      return -ENXIO;
+   }
    if (pFilpData->mClientID == (u16)-1)
    {
       DBG( "Client ID must be set before writing 0x%04X\n",
@@ -2937,7 +3007,11 @@ unsigned int UserspacePoll(
    if (IsDeviceValid( pFilpData->mpDev ) == false)
    {
       DBG( "Invalid device! Updating f_ops\n" );
+      #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,19,0 ))
+      pFilp->f_op = pFilp->f_path.dentry->d_inode->i_fop;
+      #else
       pFilp->f_op = pFilp->f_dentry->d_inode->i_fop;
+      #endif
       return POLLERR;
    }
 
@@ -3112,6 +3186,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    }
 
    pDev->mbQMIValid = true;
+   pDev->mbUnload = eStatRegister;
    pDev->readTimeoutCnt = 0;
    pDev->writeTimeoutCnt = 0;
    pDev->mtu = 0;
@@ -3322,6 +3397,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    int count = 0;
    int tries;
    int result;
+   pDev->mbUnload = eStatUnloading;
 
    // Should never happen, but check anyway
    if (IsDeviceValid( pDev ) == false)
@@ -3339,6 +3415,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
                              NULL,
                              0,
                              100 );
+      pDev->mbUnload = eStatUnloaded;
       return;
    }
    if(pDev->mQMIDev.proc_file != NULL)
@@ -3366,6 +3443,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
 
    if (pDev->mQMIDev.mbCdevIsInitialized == false)
    {
+      pDev->mbUnload = eStatUnloaded;
       return;
    }
 
@@ -3395,9 +3473,17 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
             for (count = 0; count < pFDT->max_fds; count++)
             {
                pFilp = pFDT->fd[count];
+               #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,19,0 ))
+               if (pFilp != NULL &&  pFilp->f_path.dentry != NULL)
+               #else
                if (pFilp != NULL &&  pFilp->f_dentry != NULL)
+               #endif
                {
+                  #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,19,0 ))
+                  if (pFilp->f_path.dentry->d_inode == pOpenInode)
+                  #else
                   if (pFilp->f_dentry->d_inode == pOpenInode)
+                  #endif
                   {
                      // Close this file handle
                      rcu_assign_pointer( pFDT->fd[count], NULL );
@@ -3461,7 +3547,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    cdev_del( &pDev->mQMIDev.mCdev );
 
    unregister_chrdev_region( pDev->mQMIDev.mDevNum, 1 );
-
+   pDev->mbUnload = eStatUnloaded;
    return;
 }
 

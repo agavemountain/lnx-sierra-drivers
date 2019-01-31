@@ -137,6 +137,10 @@ extern int qcqmi_table[MAX_QCQMI];
 // Basic test to see if device memory is valid
 bool IsDeviceValid( sGobiUSBNet * pDev );
 
+#ifdef CONFIG_PM
+bool bIsSuspend(sGobiUSBNet *pGobiDev);
+#endif
+
 // Print Hex data, for debug purposes
 void PrintHex(
    void *         pBuffer,

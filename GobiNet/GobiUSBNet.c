@@ -107,7 +107,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2015-07-06/SWI_2.33"
+#define DRIVER_VERSION "2015-08-27/SWI_2.34"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -168,6 +168,23 @@ static struct class * gpClass;
 
 int threshold;
 #ifdef CONFIG_PM
+bool bIsSuspend(sGobiUSBNet *pGobiDev)
+{
+   bool rc = false;
+   unsigned long flags = 0;
+   spin_lock_irqsave(&pGobiDev->sSuspendLock,flags);
+   rc = pGobiDev->bSuspend;
+   spin_unlock_irqrestore(&pGobiDev->sSuspendLock,flags);
+   return rc;
+}
+void SetCurrentSuspendStat(sGobiUSBNet *pGobiDev,bool bSuspend)
+{
+   unsigned long flags = 0;
+   spin_lock_irqsave(&pGobiDev->sSuspendLock,flags);
+   pGobiDev->bSuspend = bSuspend;
+   spin_unlock_irqrestore(&pGobiDev->sSuspendLock,flags);
+}
+
 /*===========================================================================
 METHOD:
    GobiNetSuspend (Public Method)
@@ -213,7 +230,10 @@ int GobiNetSuspend(
       DBG( "failed to get QMIDevice\n" );
       return -ENXIO;
    }
+   SetCurrentSuspendStat(pGobiDev,1);
 
+   KillRead(pGobiDev);
+   
    // Is this autosuspend or system suspend?
    //    do we allow remote wakeup?
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
@@ -234,7 +254,6 @@ int GobiNetSuspend(
    if (powerEvent.event & PM_EVENT_SUSPEND)
    {
       // Stop QMI read callbacks
-      KillRead( pGobiDev );
       pDev->udev->reset_resume = 0;
 
       // Store power state to avoid duplicate resumes
@@ -243,7 +262,7 @@ int GobiNetSuspend(
    else
    {
       // Other power modes cause QMI connection to be lost
-      pDev->udev->reset_resume = 1;
+      //pDev->udev->reset_resume = 0;
    }
 
    // Run usbnet's suspend function
@@ -268,7 +287,7 @@ int GobiNetResume( struct usb_interface * pIntf )
 {
    struct usbnet * pDev;
    sGobiUSBNet * pGobiDev;
-   int nRet;
+   int nRet= 0;
    int oldPowerState;
 
    if (pIntf == 0)
@@ -303,33 +322,72 @@ int GobiNetResume( struct usb_interface * pIntf )
    {
       // It doesn't matter if this is autoresume or system resume
       GobiClearDownReason( pGobiDev, DRIVER_SUSPENDED );
-
-      nRet = usbnet_resume( pIntf );
-      if (nRet != 0)
-      {
-         DBG( "usbnet_resume error %d\n", nRet );
-         return nRet;
-      }
-
-      // Restart QMI read callbacks
-      nRet = StartRead( pGobiDev );
-      if (nRet != 0)
-      {
-         DBG( "StartRead error %d\n", nRet );
-         return nRet;
-      }
-
+      #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,29 ))
       // Kick Auto PM thread to process any queued URBs
       complete( &pGobiDev->mAutoPM.mThreadDoWork );
+      #endif
    }
    else
    {
       DBG( "nothing to resume\n" );
       return 0;
    }
-
+   nRet = usbnet_resume( pIntf );
+   SetCurrentSuspendStat(pGobiDev,0);
+   StartRead(pGobiDev);
    return nRet;
 }
+
+void GobiNetReset(struct usb_interface * pIntf)
+{
+    sGobiUSBNet * pGobiDev;
+    struct usbnet * pDev;
+    DBG("reset suspend");
+    #if (LINUX_VERSION_CODE > KERNEL_VERSION( 2,6,23 ))
+    pDev = usb_get_intfdata( pIntf );
+    #else
+    pDev = (struct usbnet *)pIntf->dev.platform_data;
+    #endif
+    pGobiDev = (sGobiUSBNet *)pDev->data[0];
+    if (pGobiDev == NULL)
+   {
+       DBG( "failed to get QMIDevice\n" );
+       return;
+    }
+    //DeregisterQMIDevice(pGobiDev);
+    usbnet_disconnect(pIntf);
+}
+
+int GobiNetResetResume( struct usb_interface * pIntf )
+{
+   struct usbnet * pDev;
+   sGobiUSBNet * pGobiDev;
+   DBG("reset resume suspend");
+   #if (LINUX_VERSION_CODE > KERNEL_VERSION( 2,6,23 ))
+   pDev = usb_get_intfdata( pIntf );
+   #else
+   pDev = (struct usbnet *)pIntf->dev.platform_data;
+   #endif
+
+   if (pDev == NULL || pDev->net == NULL)
+   {
+      DBG( "failed to get netdevice\n" );
+      return -ENXIO;
+   }
+
+   pGobiDev = (sGobiUSBNet *)pDev->data[0];
+   if (pGobiDev == NULL)
+   {
+      DBG( "failed to get QMIDevice\n" );
+      return -ENXIO;
+   }
+   
+   GobiNetResume(pIntf);
+   
+   //DeregisterQMIDevice( pGobiDev );
+    return 0;
+}
+
 #endif /* CONFIG_PM */
 
 /* very simplistic detection of IPv4 or IPv6 headers */
@@ -505,6 +563,13 @@ struct sk_buff *GobiNetDriverTxQoS(
       return NULL;
    }
 
+   #ifdef CONFIG_PM
+   if(bIsSuspend(pGobiDev))
+   {
+       usbnet_resume(pGobiDev->mpIntf);
+   }
+   #endif
+
    if (qos_debug)
    {
        print_hex_dump(KERN_INFO,  "QoS Header : ", DUMP_PREFIX_OFFSET,
@@ -636,7 +701,19 @@ struct sk_buff *GobiNetDriverTxFixup(
 {
    unsigned char *p_qos_hdr;
    DBG( "\n" );
-
+   #ifdef CONFIG_PM
+   struct sGobiUSBNet * pGobiDev;
+   pGobiDev = (sGobiUSBNet *)pDev->data[0];
+   if (pGobiDev == NULL)
+   {
+      DBG( "failed to get QMIDevice\n" );
+      return NULL;
+   }
+   if(bIsSuspend(pGobiDev))
+   {
+      usbnet_resume(pGobiDev->mpIntf);
+   }
+   #endif
    // Skip Ethernet header from message
    if (skb_pull(pSKB, ETH_HLEN))
    {
@@ -684,6 +761,12 @@ static int GobiNetDriverRxFixup(
        DBG( "failed to get Device\n" );
        return -ENXIO;
     }
+    #ifdef CONFIG_PM
+    if(bIsSuspend(pGobiDev))
+    {
+       usbnet_resume(pGobiDev->mpIntf);
+    }
+    #endif
 
     DBG( "RX From Device: ");
     PrintHex (pSKB->data, pSKB->len);
@@ -1449,30 +1532,42 @@ int FixEthFrame(struct usbnet *dev, struct sk_buff *skb, int isIpv4)
  */
 static int GobiNetDriverLteRxFixup(struct usbnet *dev, struct sk_buff *skb)
 {
-    __be16 proto;
-
-    DBG( "From Modem: ");
-    PrintHex (skb->data, skb->len);
+   __be16 proto;
+   #ifdef CONFIG_PM
+   struct sGobiUSBNet * pGobiDev;
+   pGobiDev = (sGobiUSBNet *)dev->data[0];
+   if (pGobiDev == NULL)
+   {
+      DBG( "failed to get QMIDevice\n" );
+      return 0;
+   }
+   if(bIsSuspend(pGobiDev))
+   {
+       usbnet_resume(pGobiDev->mpIntf);
+   }
+   #endif
+   DBG( "From Modem: ");
+   PrintHex (skb->data, skb->len);
 
     /* special handling for corrupted Ethernet header packet if any */
-    if ((skb->data[ETH_HLEN] & 0xF0) == 0x40)
-    {
-        /* check if need to correct the IPV4 Ethernet header or not */
-        if (FixEthFrame(dev, skb, 1))
-        {
-           /* pass through */
-           return 1;
-        }
-    }
-    else if ((skb->data[ETH_HLEN] & 0xF0) == 0x60)
-    {
-        /* check if need to correct the IPV6 Ethernet header or not */
-        if (FixEthFrame(dev, skb, 0))
-        {
-           /* pass through */
-           return 1;
-        }
-    }
+   if ((skb->data[ETH_HLEN] & 0xF0) == 0x40)
+   {
+       /* check if need to correct the IPV4 Ethernet header or not */
+       if (FixEthFrame(dev, skb, 1))
+       {
+          /* pass through */
+          return 1;
+       }
+   }
+   else if ((skb->data[ETH_HLEN] & 0xF0) == 0x60)
+   {
+       /* check if need to correct the IPV6 Ethernet header or not */
+       if (FixEthFrame(dev, skb, 0))
+       {
+          /* pass through */
+          return 1;
+       }
+   }
 
     /* usbnet rx_complete guarantees that skb->len is at least
      * hard_header_len, so we can inspect the dest address without
@@ -1531,6 +1626,11 @@ static const struct driver_info GobiNetInfo_qmi = {
 #endif
    .data          = BIT(8) | BIT(19) |
                      BIT(10), /* MDM9x15 PDNs */
+#ifdef CONFIG_PM
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,8,0 ))
+    .manage_power = usbnet_manage_power,
+#endif
+#endif
 };
 
 static const struct driver_info GobiNetInfo_gobi = {
@@ -1549,6 +1649,11 @@ static const struct driver_info GobiNetInfo_gobi = {
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
    .data          = BIT(0) | BIT(5),
+#ifdef CONFIG_PM
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,8,0 ))
+    .manage_power = usbnet_manage_power,
+#endif
+#endif
 };
 
 static const struct driver_info GobiNetInfo_9x15 = {
@@ -1567,6 +1672,11 @@ static const struct driver_info GobiNetInfo_9x15 = {
    .rx_fixup      = GobiNetDriverLteRxFixup,
 #endif
    .data          = BIT(8) | BIT(10) | BIT(BIT_9X15),
+#ifdef CONFIG_PM
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,8,0 ))
+   .manage_power = usbnet_manage_power,
+#endif
+#endif
 };
 
 
@@ -1840,6 +1950,8 @@ int GobiUSBNetProbe(
 
 #ifdef CONFIG_PM
    init_completion( &pGobiDev->mAutoPM.mThreadDoWork );
+   spin_lock_init(&pGobiDev->sSuspendLock);
+   SetCurrentSuspendStat(pGobiDev, false);
 #endif /* CONFIG_PM */
    spin_lock_init( &pGobiDev->mQMIDev.mClientMemLock );
 
@@ -1880,6 +1992,7 @@ static struct usb_driver GobiNet =
    .suspend    = GobiNetSuspend,
    .resume     = GobiNetResume,
    .supports_autosuspend = true,
+   .reset_resume = GobiNetResetResume,
 #else
    .suspend    = NULL,
    .resume     = NULL,

@@ -368,6 +368,7 @@ typedef struct sGobiUSBNet
 
    /* QMI "device" status */
    bool                   mbQMIValid;
+   int                   mbUnload;
 
    /* QMI "device" memory */
    sQMIDev                mQMIDev;
@@ -403,6 +404,10 @@ typedef struct sGobiUSBNet
 
    bool bLinkState;
    u16 mtu;
+   #ifdef CONFIG_PM
+   bool bSuspend;
+   spinlock_t sSuspendLock;
+   #endif
 } sGobiUSBNet;
 
 /*=========================================================================*/
