@@ -173,6 +173,14 @@ if(qos_debug == 1)\
 #define CONTROL_DTR                     0x01
 #define CONTROL_RTS                     0x02
 
+#define MAX_TASK_ID 16
+
+//Register State
+enum {
+   eStatRegister=0,
+   eStatUnloading,
+   eStatUnloaded
+};
 
 /* The following definition is disabled (commented out) by default.
  * When uncommented it enables a feature that provides 'feedback' to an 
@@ -409,5 +417,4 @@ int QMICTLSetDataFormatResp(
 int QMICTLSyncResp(
    void *pBuffer,
    u16  buffSize );
-
 

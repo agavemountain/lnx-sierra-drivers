@@ -95,9 +95,18 @@ POSSIBILITY OF SUCH DAMAGE.
    #include <linux/file.h>
 #endif
 
+#include <linux/semaphore.h>
+
 #define MAX_MAP (9)
 #define MAX_DSCP_ID        0x3F
 #define UNIQUE_DSCP_ID     0x40
+
+#define MAX_READ_SYNC_TASK_ID 255
+#define MAX_RETRY_LOCK_NUMBER 10
+#define MAX_RETRY_LOCK_MSLEEP_TIME 10
+#define MAX_RETRY_TASK_LOCK_TIME 10
+#define MAX_RETRY_TASK_MSLEEP_TIME 5
+#define MAX_DEVICE_MEID_SIZE 14
 
 // Used in recursion, defined later below
 struct sGobiUSBNet;
@@ -300,12 +309,16 @@ typedef struct sQMIDev
 
    /* Spinlock for client Memory entries */
    spinlock_t                 mClientMemLock;
+   unsigned long              mFlag;
+    /* semaphore for Notify */
+   struct semaphore           mNotifyMemLock;
 
    /* Transaction ID associated with QMICTL "client" */
    atomic_t                   mQMICTLTransactionID;
 
    unsigned char              qcqmi;
 
+   int                        iInterfaceNumber;
    struct proc_dir_entry *    proc_file;
 } sQMIDev;
 
@@ -374,7 +387,7 @@ typedef struct sGobiUSBNet
    sQMIDev                mQMIDev;
 
    /* Device MEID */
-   char                   mMEID[14];
+   char                   mMEID[MAX_DEVICE_MEID_SIZE];
 
    /* AutoPM thread */
    sAutoPM                mAutoPM;
@@ -397,6 +410,8 @@ typedef struct sGobiUSBNet
     * URB used, you can't cancel the request.
     */
    struct rw_semaphore shutdown_rwsem;
+   int iShutdown_read_sem;
+   int iShutdown_write_sem;
 
    struct timer_list read_tmr;
    u16 readTimeoutCnt;
@@ -408,6 +423,20 @@ typedef struct sGobiUSBNet
    bool bSuspend;
    spinlock_t sSuspendLock;
    #endif
+   bool mIs9x15;
+   struct usb_interface *mUsb_Interface;
+   int iTaskID;
+   struct task_struct *task;
+   
+   int iReasSyncTaskID[MAX_READ_SYNC_TASK_ID];
+   struct semaphore readSem[MAX_READ_SYNC_TASK_ID];
+   struct semaphore ReadsyncSem;
+   
+   struct semaphore taskIDSem;
+   int iIsClosing;
+   struct device *qcqmidev;
+   struct device *dev;
+   u16 WDSClientID;
 } sGobiUSBNet;
 
 /*=========================================================================*/
@@ -420,9 +449,14 @@ typedef struct sQMIFilpStorage
 {
    /* Client ID */
    u16                  mClientID;
-
+   int                  mDeviceInvalid;
    /* Device pointer */
    sGobiUSBNet *          mpDev;
-
+   int iSemID ;
+   struct semaphore       mReadSem;
+   int iReleaseSemID ;
+   struct semaphore       mReleasedSem;
+   int                    iIsClosing;
+   int                    iReadSyncResult;
 } sQMIFilpStorage;
 
