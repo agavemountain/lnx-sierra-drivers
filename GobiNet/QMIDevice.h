@@ -128,6 +128,8 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "QMI.h"
 
 #define MAX_QCQMI 255
+#define SEMI_INIT_DEFAULT_VALUE 0
+
 extern int qcqmi_table[MAX_QCQMI];
 
 /*=========================================================================*/
@@ -207,7 +209,10 @@ int ReadSync(
    sGobiUSBNet *    pDev,
    void **            ppOutBuffer,
    u16                clientID,
-   u16                transactionID );
+   u16                transactionID,
+   int                *iID,
+   struct semaphore   *pReadSem,
+   int                *iIsClosing);
 
 // Write callback
 void WriteSyncCallback( struct urb * pWriteURB );
@@ -226,12 +231,14 @@ int WriteSync(
 // Create client and allocate memory
 int GetClientID( 
    sGobiUSBNet *      pDev,
-   u8                   serviceType );
+   u8                 serviceType,
+   struct semaphore   *pReadSem);
 
 // Release client and free memory
 bool ReleaseClientID(
    sGobiUSBNet *      pDev,
-   u16                  clientID );
+   u16                clientID,
+   struct semaphore   *pReadSem);
 
 // Find this client's memory
 sClientMemList * FindClientMem(
@@ -263,9 +270,14 @@ bool AddToNotifyList(
    void                 (* pNotifyFunct)(sGobiUSBNet *, u16, void *),
    void *               pData );
 
+int RemoveAndPopNotifyList(
+   sGobiUSBNet *      pDev,
+   u16              clientID,
+   u16              transactionID );
+
 // Remove first Notify entry from this client's notify list 
 //    and Run function
-bool NotifyAndPopNotifyList( 
+int NotifyAndPopNotifyList( 
    sGobiUSBNet *      pDev,
    u16                  clientID,
    u16                  transactionID );
@@ -367,8 +379,31 @@ int QMIDMSGetMEID( sGobiUSBNet * pDev );
 int QMIDMSSWISetFCCAuth( sGobiUSBNet * pDev );
 
 // Register client, send req and parse Data format response, release client
-int QMIWDASetDataFormat( sGobiUSBNet * pDev );
+int QMIWDASetDataFormat( sGobiUSBNet * pDev, bool te_flow_control );
 
 // send req and parse Data format response
 int QMICTLSetDataFormat( sGobiUSBNet * pDev );
+
+// Initialize Read Sync tasks semaphore
+void InitSemID(sGobiUSBNet * pDev);
+
+//Release all Read Sync tasks semaphore(s)
+void StopSemID(sGobiUSBNet * pDev);
+
+//Query semaphore slot ID
+int iGetSemID(sGobiUSBNet *pDev,int line);
+
+/***************************************************************************/
+// wait_ms
+/**************************************************************************/
+void wait_ms(unsigned int ms) ;
+
+// Userspace Release (synchronous)
+int UserspaceRelease(struct inode *inode, struct file *file);
+
+// Userspace Lock (synchronous)
+int UserSpaceLock(struct file *filp, unsigned int cmd, struct file_lock *fl, struct file_lock *conf);
+
+// sync memory
+void gobi_flush_work(void);
 
