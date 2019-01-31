@@ -2836,6 +2836,7 @@ long UserspaceunlockedIOCTL(
 
          pFilpData->iSemID = __LINE__;
          result = GetClientID( pFilpData->mpDev, (u8)arg ,&(pFilpData->mReadSem));
+         pFilpData->iReadSyncResult = 0;
          pFilpData->iSemID = -__LINE__;
 
          if (result < 0)

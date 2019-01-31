@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-01-04/SWI_2.27"
+#define DRIVER_VERSION "2017-04-05/SWI_2.28"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -266,6 +266,24 @@ static struct usb_device_id GobiVIDPIDTable[] =
    { USB_DEVICE(0x1199, 0x9070),
       /* blacklist the interface */
       .driver_info = BIT(1) | BIT(4) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+
+   /* Sierra Wireless QMI AR759x */
+   { USB_DEVICE(0x1199, 0x9100),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+   
+   /* Sierra Wireless QMI AR758x */
+   { USB_DEVICE(0x1199, 0x9102),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+   
+   /* Sierra Wireless QMI AR759x */
+   { USB_DEVICE(0x1199, 0x9110),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
 
    {G3K_DEVICE(0x1199, 0x9010)},
@@ -727,6 +745,9 @@ bool IsGPSPort(struct usb_serial_port *   pPort )
       case 0x9041:
       case 0x9071:
       case 0x9070:
+      case 0x9100:
+      case 0x9102:
+      case 0x9110:
          if (pPort->serial->interface->cur_altsetting->desc.bInterfaceNumber == 2)
             return true;
          break;

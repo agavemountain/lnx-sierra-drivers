@@ -127,7 +127,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-02-28/SWI_2.41"
+#define DRIVER_VERSION "2017-04-05/SWI_2.42"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -409,6 +409,7 @@ int thread_function(void *data)
    {
       if(pGobiDev->iDataMode==eDataMode_RAWIP)
       {
+         pGobiDev->mpNetDev->net->hard_header_len = 0;
          pGobiDev->mpNetDev->net->flags |= IFF_NOARP;
          #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,4,0 ))
          pGobiDev->mpNetDev->net->flags |= IFF_NOARP | IFF_MULTICAST;
@@ -2088,6 +2089,14 @@ static const struct usb_device_id GobiVIDPIDTable [] =
    //9x30
    {QMI_9X15_DEVICE(0x1199, 0x9070)},
 
+   //AR759x
+   {QMI_9X15_DEVICE(0x1199, 0x9100)},
+   
+   //AR758x
+   {QMI_9X15_DEVICE(0x1199, 0x9102)},
+   
+   //AR758x
+   {QMI_9X15_DEVICE(0x1199, 0x9110)},
    //Terminating entry
    { }
 };
@@ -2244,7 +2253,6 @@ int GobiUSBNetProbe(
       return -ENOMEM;
    }
    memcpy( pNetDevOps, pDev->net->netdev_ops, sizeof( struct net_device_ops ) );
-   pDev->net->hard_header_len = 0;
 
    pGobiDev->mpUSBNetOpen = pNetDevOps->ndo_open;
    pNetDevOps->ndo_open = GobiUSBNetOpen;
