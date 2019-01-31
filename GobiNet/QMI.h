@@ -178,6 +178,7 @@ if(qos_debug == 1)\
 
 #define MAX_TASK_ID 16
 
+#define QMUX_HEADER_LENGTH 4
 //Register State
 enum {
    eStatRegister=0,
@@ -289,7 +290,7 @@ u16 QMIDMSGetMEIDReqSize( void );
 u16 QMIDMSSWISetFCCAuthReqSize( void );
 
 // Get size of buffer needed for QMUX + QMIWDASetDataFormatReq
-u16 QMIWDASetDataFormatReqSize( int te_flow_control );
+u16 QMIWDASetDataFormatReqSize( int te_flow_control ,int qmuxmode);
 
 // Get size of buffer needed for QMUX + QMICTLSetDataFormatReq
 u16  QMICTLSetDataFormatReqSize( void );
@@ -351,7 +352,9 @@ int QMIWDASetDataFormatReq(
    u16      buffSize,
    u16      transactionID,
    int     te_flow_control,
-   int      iDataMode);
+   int      iDataMode,
+   unsigned mIntfNum,
+   int      iqmuxenable);
 
 // Fill buffer with QMI CTL Set Data Format Request
 int QMICTLSetDataFormatReq(
@@ -454,6 +457,14 @@ u16 QMICTLConfigPowerSaveSettingsReqSize( void );
 int QMICTLConfigPowerSaveSettingsResp(
    void *   pBuffer,
    u16      buffSize );
+
+// Get size of buffer needed for QMUX + QMIWDASetDataFormatReqSettingsReq
+u16 QMIWDASetDataFormatReqSettingsSize( void );
+
+int QMIWDASetDataFormatReqSettingsReq(
+      void *   pBuffer,
+      u16      buffSize,
+      u16      transactionID );
 
 enum{
    eSKIP_TE_FLOW_CONTROL_TLV=-1,

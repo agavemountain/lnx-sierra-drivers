@@ -121,6 +121,11 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/proc_fs.h> // for the proc filesystem
 #include <linux/device.h>
 #include <linux/file.h>
+#include <linux/rtnetlink.h>
+#include <linux/netdevice.h>
+#include <net/sch_generic.h>
+#include <linux/if_arp.h>
+
 #if (LINUX_VERSION_CODE == KERNEL_VERSION( 2,6,35 ))
 #warning "Fix compilation error 'include/linux/compat.h:233: error: in /usr/src/linux-headers-2.6.35-22-generic/include/linux/compat.h, line 233, the variable name of second parameter,  replace *u32 to *u"
 #endif
@@ -154,11 +159,20 @@ enum {
 #define USB_READ_TIMEOUT (500)
 #define MAX_RETRY 5
 #define ENABLE_MAX_RETRY_LOCK_MSLEEP_TIME 10
+#if defined(CONFIG_SMP) || defined(CONFIG_DEBUG_SPINLOCK)
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
+#define raw_spin_is_locked(x) (&(x)->raw_lock == 0)
+#endif
+#endif
+
+
 /* initially all zero */
 int qcqmi_table[MAX_QCQMI];
+int qmux_table[MAX_QCQMI];
 
 extern bool isModuleUnload(sGobiUSBNet *pDev);
 extern int iRAWIPEnable;
+extern int iQMUXEnable;
 static inline bool IsDeviceValid( sGobiUSBNet * pDev );
 
 #define CLIENT_READMEM_SNAPSHOT(clientID, pdev)\
@@ -213,6 +227,7 @@ void gobi_try_wake_up_process(struct task_struct * pTask);
 #define IOCTL_QMI_DUMP_MAPPING 0x8BE0 + 12
 #define IOCTL_QMI_GET_USBNET_STATS 0x8BE0 + 13
 #define IOCTL_QMI_SET_DEVICE_MTU 0x8BE0 + 14
+#define IOCTL_QMI_GET_QMAP_SUPPORT 0x8BE0 + 15
 
 // CDC GET_ENCAPSULATED_RESPONSE packet
 #define CDC_GET_ENCAPSULATED_RESPONSE_LE 0x01A1ll
@@ -252,6 +267,139 @@ const int i = 1;
 }
 
 #define SPIN_LOCK_DEBUG 0
+
+/*=========================================================================*/
+// QMAP netdev define
+/*=========================================================================*/
+#define ARPHRD_NONE     0xFFFE
+#ifndef netdev_tx_t
+#define netdev_tx_t int
+#endif
+struct gobi_qmimux_hdr {
+   u8 pad;
+   u8 mux_id;
+   __be16 pkt_len;
+};
+
+static int gobi_qmimux_open(struct net_device *dev)
+{
+   struct gobi_qmimux_priv *priv = netdev_priv(dev);
+   struct net_device *real_dev = priv->real_dev;
+   unsigned short oflags;
+   DBG("\n");
+   if (!(priv->real_dev->flags & (IFF_UP|IFF_RUNNING)))
+   {
+      printk("Adaptor Not Up\n");
+      oflags = dev->flags;
+      if (dev_change_flags(real_dev, oflags | IFF_UP | IFF_RUNNING) < 0) {
+          printk("IP-Config: Failed to open %s\n",
+          dev->name);
+      }
+      netif_carrier_on(real_dev);
+   }
+   
+   netif_carrier_on(real_dev);
+   netif_start_queue(real_dev);
+   netif_carrier_on(dev);
+   netif_start_queue(dev);
+   return 0;
+}
+
+static int gobi_qmimux_stop(struct net_device *dev)
+{
+   DBG("\n");
+   netif_carrier_off(dev);
+   return 0;
+}
+
+struct sk_buff *GobiNetDriverQmuxTxFixup(
+   struct sk_buff *pSKB,
+   gfp_t flags,
+   u8 mux_id)
+{
+
+   DBG( "\n" );
+   if (pSKB->len >= 4)
+   {
+
+      // Skip Ethernet header from message
+      DBG( "Before sending to device modified: Len:0x%x",pSKB->len);
+      PrintHex (pSKB->data, pSKB->len);
+      return pSKB;
+   }
+   else
+   {
+      DBG( "Packet Dropped Length");
+   }
+
+   // Filter the packet out, release it
+   dev_kfree_skb_any(pSKB);
+   return NULL;
+}
+
+static netdev_tx_t gobi_qmimux_start_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+   struct gobi_qmimux_priv *priv = netdev_priv(dev);
+   unsigned int len = skb->len;
+   struct gobi_qmimux_hdr *hdr;
+
+   skb->dev = priv->real_dev;
+   if(dev->type == ARPHRD_ETHER)
+   {
+      DBG("Remove ETH Header\n");
+      PrintHex (skb->data, skb->len);
+      skb_pull(skb,ETH_HLEN);
+      hdr = (struct gobi_qmimux_hdr *)skb_push(skb, sizeof(struct gobi_qmimux_hdr));
+      len = skb->len - sizeof(struct gobi_qmimux_hdr);
+   }
+   else
+   {
+      if ((skb->head +sizeof(struct gobi_qmimux_hdr)) > skb->data )
+      {
+         memmove(skb->data+sizeof(struct gobi_qmimux_hdr),skb->data, skb->len);
+         skb->len = skb->len + sizeof(struct gobi_qmimux_hdr);
+         skb->tail = skb->tail + sizeof(struct gobi_qmimux_hdr);
+         hdr = (struct gobi_qmimux_hdr *)skb;
+      }
+      else
+      {
+         hdr = (struct gobi_qmimux_hdr *)skb_push(skb, sizeof(struct gobi_qmimux_hdr));
+      }
+   }
+   hdr->pad = 0;
+   hdr->mux_id = priv->mux_id;
+   hdr->pkt_len = cpu_to_be16(len);
+   skb->dev = priv->real_dev;
+   DBG("mux_id:0x%x\n",priv->mux_id);
+   if(iIsValidQmuxSKB(skb)==0)
+   {
+      DBG( "Invalid Packet\n" );
+      return NETDEV_TX_BUSY;
+   }
+   skb = GobiNetDriverQmuxTxFixup( skb, GFP_ATOMIC,priv->mux_id);
+   if (skb == NULL)
+   {
+      DBG( "unable to tx_fixup skb\n" );
+      return NETDEV_TX_BUSY;
+   }
+   dev->stats.tx_packets++;
+   dev->stats.tx_bytes += skb->len;
+   #if (LINUX_VERSION_CODE < KERNEL_VERSION( 4,7,0 ))
+   dev->trans_start = jiffies;
+   #else
+   netif_trans_update(dev);
+   #endif
+   return dev_queue_xmit(skb);
+}
+
+static const struct net_device_ops gobi_qmimux_netdev_ops = {
+   .ndo_open       = gobi_qmimux_open,
+   .ndo_stop       = gobi_qmimux_stop,
+   .ndo_start_xmit = gobi_qmimux_start_xmit,
+};
+
+/*=========================================================================*/
+
 
 /*=========================================================================*/
 // UserspaceQMIFops
@@ -1355,6 +1503,7 @@ int StartRead( sGobiUSBNet * pDev )
       return -ENXIO;
    }
    mb();
+   wait_interrupt();
    mutex_lock(&(pDev->urb_lock));
    usb_fill_int_urb( pDev->mQMIDev.mpIntURB,
                      pDev->mpNetDev->udev,
@@ -3641,6 +3790,24 @@ long UserspaceunlockedIOCTL(
              usbnet_change_mtu(pDev->mpNetDev->net ,pDev->mtu);
          }
          return 0;
+         case IOCTL_QMI_GET_QMAP_SUPPORT:
+         {
+            sGobiUSBNet *pDev = pFilpData->mpDev;
+
+            if (arg == 0)
+            {
+               DBG( "Bad QMAP IOCTL buffer\n" );
+               return -EINVAL;
+            }
+            result = copy_to_user( (unsigned int *)arg, &pDev->nRmnet, sizeof(pDev->nRmnet));
+            if (result != 0)
+            {
+               DBG( "Copy to userspace failure %d\n", result );
+            }
+			DBG( "nRmnet:%d\n",(int)pDev->nRmnet);
+            return result;
+          }
+
       default:
          return -EBADRQC;
    }
@@ -3817,11 +3984,19 @@ int UserspaceClose(
    pid_t pid = -1;
    int iTimeout = 0;
    int iFile_count = 0;
+   long refcnt = 0;
    mb();
    if(pFilp ==NULL)
    {
       printk( KERN_INFO "bad file data\n" );
       return -EBADF;
+   }
+
+   refcnt = atomic_long_read(&pFilp->f_count);
+   if (refcnt > 1)
+   {
+      DBG("f_count %ld - ignoring close\n", refcnt);
+      return 0;
    }
    
    pFilpData = (sQMIFilpStorage *)pFilp->private_data;
@@ -5022,7 +5197,11 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    if (is9x15)
    {
       i=0;
-      if(iRAWIPEnable==0)
+      if (pDev->iQMUXEnable!=0)
+      {
+         pDev->iDataMode = eDataMode_RAWIP;
+      }
+      else if(iRAWIPEnable==0)
       {
          pDev->iDataMode = eDataMode_Ethernet;
       }
@@ -5035,11 +5214,11 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
       {
          if(iTEEnable!=eSKIP_TE_FLOW_CONTROL_TLV)//TE_FLOW_CONTROL
          {
-            result = QMIWDASetDataFormat (pDev, iTEEnable);
+            result = QMIWDASetDataFormat (pDev, iTEEnable,pDev->iQMUXEnable);
          }
          else
          {
-            result = QMIWDASetDataFormat (pDev, eSKIP_TE_FLOW_CONTROL_TLV);
+            result = QMIWDASetDataFormat (pDev, eSKIP_TE_FLOW_CONTROL_TLV,pDev->iQMUXEnable);
          }
          if(isModuleUnload(pDev))
          {
@@ -5062,7 +5241,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
        {
           if(iTEEnable==eTE_FLOW_CONTROL_TLV_1)//TE_FLOW_CONTROL
           {
-             result = QMIWDASetDataFormat (pDev, eTE_FLOW_CONTROL_TLV_0);
+             result = QMIWDASetDataFormat (pDev, eTE_FLOW_CONTROL_TLV_0,pDev->iQMUXEnable);
              if(result != 0)
              {
                 printk(KERN_INFO "Set Data Format Fail\n");
@@ -5074,7 +5253,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
           }
           else if(iTEEnable==eTE_FLOW_CONTROL_TLV_0)//TE_FLOW_CONTROL
           {
-             result = QMIWDASetDataFormat (pDev, eSKIP_TE_FLOW_CONTROL_TLV);
+             result = QMIWDASetDataFormat (pDev, eSKIP_TE_FLOW_CONTROL_TLV,pDev->iQMUXEnable);
              if(result != 0)
              {
                 printk(KERN_INFO "Set Data Format Fail No TE flow control\n");
@@ -5597,7 +5776,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
       preempt_disable();
    }
    pDev->mbUnload = eStatUnloading;
-
+   qmux_table[pDev->iDeviceMuxID]=0;
    // Should never happen, but check anyway
    if (IsDeviceValid( pDev ) == false)
    {
@@ -6717,6 +6896,114 @@ int QMICTLSetDataFormat( sGobiUSBNet * pDev )
 
 /*===========================================================================
 METHOD:
+   QMIWDASetQMAP (Public Method)
+
+DESCRIPTION:
+   Send set QMAP Data format request and parse response
+
+PARAMETERS:
+   pDev            [ I ] - Device specific memory
+   WDAClientID     [ I ] - WDA Client ID
+RETURN VALUE:
+   int - 0 for success
+            Negative errno for failure
+===========================================================================*/
+int QMIWDASetQMAP( sGobiUSBNet * pDev , u16 WDAClientID)
+{
+   int result;
+   void *pWriteBuffer;
+   u16 writeBufferSize;
+   void *pReadBuffer;
+   u16 readBufferSize;
+   unsigned long flags;
+   struct semaphore readSem;
+   u16 uTID=2;
+   DBG("\n");
+
+   if (IsDeviceValid( pDev ) == false)
+   {
+      DBG( "Invalid device\n" );
+      return -EFAULT;
+   }
+   sema_init( &readSem, SEMI_INIT_DEFAULT_VALUE );
+   mb();
+
+   // QMI WDA Set Data Format Request
+   writeBufferSize = QMIWDASetDataFormatReqSettingsSize();
+   pWriteBuffer = kmalloc( writeBufferSize, GFP_KERNEL );
+   if (pWriteBuffer == NULL)
+   {
+      return -ENOMEM;
+   }
+
+   result = QMIWDASetDataFormatReqSettingsReq( pWriteBuffer,
+                                    writeBufferSize,
+                                    uTID);
+   if (result < 0)
+   {
+      kfree( pWriteBuffer );
+      return result;
+   }
+
+   result = ReadAsync( pDev, WDAClientID, uTID, UpSem, &readSem ,1);
+   if(result == 0)
+   {
+      result = WriteSync( pDev,
+                          pWriteBuffer,
+                          writeBufferSize,
+                          WDAClientID );
+      kfree( pWriteBuffer );
+   }
+   if (result < 0)
+   {
+      DBG( "WriteSync Fail\n" );
+      return result;
+   }
+   wait_ms(QMI_CONTROL_MSG_DELAY_MS);
+   mb();
+   flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
+   mutex_lock(&(pDev->notif_lock));
+   barrier();
+   if (down_trylock( &readSem ) == 0)
+   {
+       // Enter critical section
+         // Pop the read data
+         if (PopFromReadMemList( pDev,
+                                 WDAClientID,
+                                 uTID,
+                                 &pReadBuffer,
+                                 &readBufferSize ) == true)
+         {
+            PrintHex( pReadBuffer, readBufferSize );
+            result = 0;
+            // We don't care about the result
+            if(pReadBuffer)
+            kfree( pReadBuffer );
+         }
+         else
+         {
+            // Read mismatch/failure, unlock and continue
+            RemoveAndPopNotifyList(pDev,WDAClientID,uTID,eClearAndReleaseCID);
+         }
+   }
+   else
+   {
+      DBG( "Timeout\n" );
+      result = -1;
+      // Timeout, remove the async read
+      barrier();
+      RemoveAndPopNotifyList(pDev,WDAClientID,uTID,eClearAndReleaseCID);
+   }
+   mutex_unlock(&(pDev->notif_lock));
+   LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
+   if (result < 0)
+   {
+      DBG( "Data Format Cannot be set\n" );
+   }
+   return result;
+}
+/*===========================================================================
+METHOD:
    QMIWDASetDataFormat (Public Method)
 
 DESCRIPTION:
@@ -6727,11 +7014,12 @@ DESCRIPTION:
 PARAMETERS:
    pDev            [ I ] - Device specific memory
    te_flow_control [ I ] - TE Flow Control Flag
-
+   iqmuxenable     [ I ] - QMUX Control Flag
 RETURN VALUE:
-   None
+   int - 0 for success
+            Negative errno for failure
 ===========================================================================*/
-int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control )
+int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control , int iqmuxenable)
 {
    int result;
    void * pWriteBuffer;
@@ -6741,7 +7029,7 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control )
    u16 WDAClientID;
    unsigned long flags;
    struct semaphore readSem;
-
+   u16 uTID=1;
    //DBG("\n");
 
    if (IsDeviceValid( pDev ) == false)
@@ -6760,7 +7048,7 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control )
    WDAClientID = result;
 
    // QMI WDA Set Data Format Request
-   writeBufferSize = QMIWDASetDataFormatReqSize(te_flow_control);
+   writeBufferSize = QMIWDASetDataFormatReqSize(te_flow_control,iqmuxenable);
    pWriteBuffer = kmalloc( writeBufferSize, GFP_KERNEL );
    if (pWriteBuffer == NULL)
    {
@@ -6770,9 +7058,11 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control )
 
    result = QMIWDASetDataFormatReq( pWriteBuffer,
                                     writeBufferSize,
-                                    1,
+                                    uTID,
                                     te_flow_control,
-                                    pDev->iDataMode);
+                                    pDev->iDataMode,
+                                    pDev->mpIntf->cur_altsetting->desc.bInterfaceNumber,
+                                    iqmuxenable);
    if (result < 0)
    {
       kfree( pWriteBuffer );
@@ -6780,7 +7070,7 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control )
       return result;
    }
 
-   result = ReadAsync( pDev, WDAClientID, 1, UpSem, &readSem ,1);
+   result = ReadAsync( pDev, WDAClientID, uTID, UpSem, &readSem ,1);
    if(result == 0)
    {
       result = WriteSync( pDev,
@@ -6806,7 +7096,7 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control )
          // Pop the read data
          if (PopFromReadMemList( pDev,
                                  WDAClientID,
-                                 1,
+                                 uTID,
                                  &pReadBuffer,
                                  &readBufferSize ) == true)
          {
@@ -6820,7 +7110,7 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control )
          else
          {
             // Read mismatch/failure, unlock and continue
-            RemoveAndPopNotifyList(pDev,WDAClientID,1,eClearAndReleaseCID);
+            RemoveAndPopNotifyList(pDev,WDAClientID,uTID,eClearAndReleaseCID);
          }
    }
    else
@@ -6829,13 +7119,18 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control )
       result = -1;
       // Timeout, remove the async read
       barrier();
-      RemoveAndPopNotifyList(pDev,WDAClientID,1,eClearAndReleaseCID);
+      RemoveAndPopNotifyList(pDev,WDAClientID,uTID,eClearAndReleaseCID);
    }
    mutex_unlock(&(pDev->notif_lock));
    LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
    if (result < 0)
    {
       DBG( "Data Format Cannot be set\n" );
+   }
+   if(iqmuxenable!=0)
+   {
+      /* Set QMAP Aggregation size*/
+      result = QMIWDASetQMAP( pDev , WDAClientID);
    }
    ReleaseClientID( pDev, WDAClientID );
 
@@ -7714,5 +8009,107 @@ void gobi_usb_autopm_put_interface_async(struct usb_interface *intf)
    }
    
    usb_autopm_put_interface_async(intf);
+}
+
+struct net_device* gobi_qmimux_register_device(struct net_device *real_dev,int iNumber, u8 mux_id)
+{
+   struct net_device *new_dev;
+   struct gobi_qmimux_priv *priv;
+   int err;
+   char szName[64]={0};
+   DBG("Create 0x%x\n",mux_id);
+   snprintf(szName,63,"gobi-%d-%d",iNumber,mux_id-MUX_ID_START);
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,18,0 ))
+   new_dev = alloc_netdev(sizeof(struct gobi_qmimux_priv),
+                szName, NET_NAME_UNKNOWN, ether_setup);
+   #else
+   new_dev = alloc_netdev(sizeof(struct gobi_qmimux_priv),
+                          szName, ether_setup);
+   #endif
+   new_dev->netdev_ops = &gobi_qmimux_netdev_ops;
+   new_dev->flags           = IFF_NOARP | IFF_MULTICAST;
+   random_ether_addr(new_dev->dev_addr);
+   if (!new_dev)
+      return NULL;
+   priv = netdev_priv(new_dev);
+   priv->mux_id = mux_id;
+   priv->real_dev = real_dev;
+   new_dev->irq = real_dev->irq;
+
+   err = register_netdevice(new_dev);
+   if (err < 0)
+      goto out_free_newdev;
+   dev_hold(real_dev);
+   return new_dev;
+
+out_free_newdev:
+   free_netdev(new_dev);
+   return NULL;
+}
+
+void gobi_qmimux_unregister_device(struct net_device *dev)
+{
+   struct gobi_qmimux_priv *priv = netdev_priv(dev);
+   struct net_device *real_dev = priv->real_dev;
+   netif_carrier_off(dev);
+   netif_stop_queue(dev);
+   netif_dormant_off(dev);
+   dev_close(dev);
+   netif_device_detach(dev);
+   unregister_netdevice(dev);
+   /* Get rid of the reference to real_dev */
+   dev_put(real_dev);   
+}
+
+int iIsValidQmuxSKB(struct sk_buff *skb)
+{
+   if(skb->len >= QMUX_HEADER_LENGTH)
+   {
+      u32 length = skb->data[2];
+      length = (length<<8) + skb->data[3];
+      //To Fix Incomming packet larger than expected.
+      if(length<=(skb->len-QMUX_HEADER_LENGTH))//if(length==(skb->len-QMUX_HEADER_LENGTH))//
+      {
+         if((skb->data[0]<0x04)
+         &&(skb->data[1]&0x8F))
+         {
+            return 1;
+         }
+         else if((skb->data[0]<0x04)
+         &&(skb->data[1]==0))
+         {
+            return 1;
+         }
+         else
+         {
+            PrintHex (skb->data, skb->len);
+         }
+      }
+      else
+      {
+         DBG("Length Not matched.\n");
+      }
+   }
+   return 0;
+}
+/***********************************
+         0 – Request, i.e., sender is sending a 
+             QMAP control command to the receiver.
+         1 – Ack, i.e., receiver is acknowledging that 
+             it received a QMAP control command and that 
+            it successfully processed the command.
+         2 – Unsupported command, i.e., receiver does 
+             not support this QMAP control command.
+         3 – Invalid command, i.e., receiver encountered 
+             an error while processing the QMAP control command, 
+             probably because QMAP control command is malformed.
+      **************************************/
+int iGetQmuxIDFromSKB(struct sk_buff *skb)
+{
+   if(iIsValidQmuxSKB(skb))
+   {
+      return (int)skb->data[1];
+   }
+   return -1;
 }
 

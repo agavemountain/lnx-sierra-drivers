@@ -108,6 +108,14 @@ POSSIBILITY OF SUCH DAMAGE.
 #define MAX_RETRY_TASK_MSLEEP_TIME 5
 #define MAX_DEVICE_MEID_SIZE 14
 
+//Max number of QMUX supported 
+#define MAX_MUX_NUMBER_SUPPORTED 8
+//First supported QMUX ID
+#define MUX_ID_START 0x80
+//Last supported QMUX ID
+#define MUX_ID_END   MUX_ID_START + MAX_MUX_NUMBER_SUPPORTED
+#define RMNET_QMAP_STRING "rmnet-qmap-"
+
 // Used in recursion, defined later below
 struct sGobiUSBNet;
 
@@ -455,6 +463,11 @@ typedef struct sGobiUSBNet
    struct mutex urb_lock;
    struct mutex notif_lock;
    int iUSBState;
+   int iDeviceMuxID;
+   int iQMUXEnable;
+   int nRmnet;
+   int iMaxMuxID;
+   struct net_device *pNetDevice[MAX_MUX_NUMBER_SUPPORTED];
 } sGobiUSBNet;
 
 /*=========================================================================*/
@@ -484,3 +497,13 @@ typedef struct sQMIFilpStorage
    int                    iCount;
 } sQMIFilpStorage;
 
+struct gobi_qmimux_priv {
+   struct net_device *real_dev;
+   u8 mux_id;
+};
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION( 3,0,0 )
+#ifndef kstrtol
+#define kstrtol strict_strtol
+#endif
+#endif

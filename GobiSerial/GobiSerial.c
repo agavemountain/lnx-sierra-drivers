@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-04-05/SWI_2.28"
+#define DRIVER_VERSION "2017-08-18/SWI_2.29"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -282,6 +282,26 @@ static struct usb_device_id GobiVIDPIDTable[] =
    
    /* Sierra Wireless QMI AR759x */
    { USB_DEVICE(0x1199, 0x9110),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+   
+   /* Sierra Wireless QMI MC75xx/EM75xx BOOT*/
+   { USB_DEVICE(0x1199, 0x9090),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+
+   /* Sierra Wireless QMI MC75xx/EM75xx QMI*/
+   { USB_DEVICE(0x1199, 0x9091),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   }, 
+   { USB_DEVICE(0x1199, 0x90b0),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+   { USB_DEVICE(0x1199, 0x90b1),
       /* blacklist the interface */
       .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
@@ -745,6 +765,12 @@ bool IsGPSPort(struct usb_serial_port *   pPort )
       case 0x9041:
       case 0x9071:
       case 0x9070:
+      //9x50
+      case 0x9090:
+      //9x50
+      case 0x9091:
+      case 0x90b0:
+      case 0x90b1:
       case 0x9100:
       case 0x9102:
       case 0x9110:

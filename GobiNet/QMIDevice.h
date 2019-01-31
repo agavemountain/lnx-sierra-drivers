@@ -132,6 +132,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #define QMI_CONTROL_MSG_DELAY_MS 100
 
 extern int qcqmi_table[MAX_QCQMI];
+extern int qmux_table[MAX_QCQMI];
 
 //Register State
 enum {
@@ -405,7 +406,10 @@ int QMIDMSGetMEID( sGobiUSBNet * pDev );
 int QMIDMSSWISetFCCAuth( sGobiUSBNet * pDev );
 
 // Register client, send req and parse Data format response, release client
-int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control );
+int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control , int iqmuxenable);
+
+// Send set QMAP Data format request and parse response
+int QMIWDASetQMAP( sGobiUSBNet * pDev , u16 WDAClientID);
 
 // send req and parse Data format response
 int QMICTLSetDataFormat( sGobiUSBNet * pDev );
@@ -478,4 +482,15 @@ void gobi_usb_autopm_put_interface(struct usb_interface *intf);
 void gobi_usb_autopm_get_interface_no_resume(struct usb_interface *intf);
 int gobi_usb_autopm_get_interface_async(struct usb_interface *intf);
 void gobi_usb_autopm_put_interface_async(struct usb_interface *intf);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
+void gobi_usb_autopm_enable(struct usb_interface *intf);
+#endif
 
+//unregister qmap netdev
+void gobi_qmimux_unregister_device(struct net_device *dev);
+//register qmap netdev
+struct net_device * gobi_qmimux_register_device(struct net_device *real_dev,int iNumber, u8 mux_id);
+//Check SKB is a QMUX packet
+int iIsValidQmuxSKB(struct sk_buff *skb);
+//Get MUX ID from skb
+int iGetQmuxIDFromSKB(struct sk_buff *skb);

@@ -90,7 +90,13 @@ USB/xhci: Enable remote wakeup for USB3 devices
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
 #include <linux/module.h>
+#include <linux/kernel.h>
 #include <net/ip.h>
+#include <net/sch_generic.h>
+#include <linux/skbuff.h>
+#include <linux/netdevice.h>
+#include <net/xfrm.h>
+
 #ifdef CONFIG_MEMCG
 #define MEMCG_NOT_FIX
 #ifdef MEMCG_NOT_FIX
@@ -131,7 +137,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2017-07-06/SWI_2.44"
+#define DRIVER_VERSION "2017-08-22/SWI_2.45.1"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -152,6 +158,8 @@ int iModuleExit=0;
  * enable/disable TE flow control
  */
 int iTEEnable=-1;
+int iQMAPEnable=-1;
+int iMaxQMUXSupported=-1;
 /*
  * Is RAW IP RAW
  */
@@ -215,7 +223,7 @@ struct semaphore taskLoading;
 void StopTask(sGobiUSBNet *pDev);
 bool isModuleUnload(sGobiUSBNet *pDev);
 int FixEthFrame(struct usbnet *dev, struct sk_buff *skb, int isIpv4);
-void ResetEthHeader(struct usbnet *dev, struct sk_buff *skb, int isIpv4);
+void ResetEthHeader(struct usbnet *dev, struct sk_buff *skb, int isIpv4, int isQMAPPacket);
 int GobiUSBNetOpen( struct net_device * pNet );
 int GobiUSBNetStop( struct net_device * pNet );
 #ifdef FIX_RX_BUFFER
@@ -225,6 +233,83 @@ static int GobiNetDriverLteRxFixup(struct usbnet *dev, struct sk_buff *skb);
 void SendWakeupControlMsg(
    struct usb_interface * pIntf,
    int oldPowerState);
+void StopQMUXNet(sGobiUSBNet * pGobiDev);
+void DeleteQMUXNet(sGobiUSBNet * pGobiDev);
+int gobi_dev_forward_skb(struct net_device *dev, struct sk_buff *skb);
+
+void DeleteQMUXNet(sGobiUSBNet * pGobiDev)
+{
+   if(pGobiDev==NULL)
+      return;
+   if(pGobiDev->mpNetDev == NULL)
+      return;
+   usbnet_stop(pGobiDev->mpNetDev->net);//IPV6 lock error
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,0,0 ))
+   if (pGobiDev->mpNetDev->net->flags & IFF_UP)
+   dev_deactivate(pGobiDev->mpNetDev->net);
+   #endif
+   if(pGobiDev->iQMUXEnable!=0)
+   {
+      int i=0;
+      netif_stop_queue(pGobiDev->mpNetDev->net);
+      netif_carrier_off(pGobiDev->mpNetDev->net);
+      usbnet_stop(pGobiDev->mpNetDev->net);
+      netif_stop_queue(pGobiDev->mpNetDev->net);
+      if(netif_running(pGobiDev->mpNetDev->net))
+      {
+         DBG("running\n");
+      }
+      if (!rtnl_trylock()) {
+         restart_syscall();
+         return;
+      }
+      for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
+      {
+         if(pGobiDev->pNetDevice[i]!=NULL)
+         gobi_qmimux_unregister_device(pGobiDev->pNetDevice[i]);
+      }
+      rtnl_unlock();
+      netif_stop_queue(pGobiDev->mpNetDev->net);
+      netif_carrier_off(pGobiDev->mpNetDev->net);
+   }
+}
+void StopQMUXNet(sGobiUSBNet * pGobiDev)
+{
+   if(pGobiDev==NULL)
+      return ;
+   if(pGobiDev->mpNetDev == NULL)
+      return;
+   usbnet_stop(pGobiDev->mpNetDev->net);//IPV6 lock error
+   if(pGobiDev->iQMUXEnable!=0)
+   {
+      int i=0;
+      netif_stop_queue(pGobiDev->mpNetDev->net);
+      netif_carrier_off(pGobiDev->mpNetDev->net);
+      usbnet_stop(pGobiDev->mpNetDev->net);
+      netif_stop_queue(pGobiDev->mpNetDev->net);
+      if(netif_running(pGobiDev->mpNetDev->net))
+      {
+         DBG("running\n");
+      }
+
+      rcu_read_lock();
+      for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
+      {
+         if(pGobiDev->pNetDevice[i]!=NULL)
+         {
+            netif_stop_queue(pGobiDev->pNetDevice[i]);
+            netif_carrier_off(pGobiDev->pNetDevice[i]);  
+         }
+      }
+      rcu_read_unlock();
+
+      netif_stop_queue(pGobiDev->mpNetDev->net);
+      netif_carrier_off(pGobiDev->mpNetDev->net);
+      wait_ms(500);
+      DeleteQMUXNet(pGobiDev);
+   }
+}
+
 
 void ClearTaskID(bool bForceMode,sGobiUSBNet *pDev)
 {
@@ -466,6 +551,7 @@ int thread_function(void *data)
    #endif
    if (status != 0)
    {
+      StopQMUXNet(pGobiDev);
       // usbnet_disconnect() will call GobiNetDriverUnbind() which will call
       // DeregisterQMIDevice() to clean up any partially created QMI device
       if(pGobiDev->mbUnload >= eStatUnloading)
@@ -941,6 +1027,8 @@ static void GobiNetDriverUnbind(
    // Should already be down, but just in case...
    netif_stop_queue(pDev->net);
    netif_carrier_off( pDev->net );
+   netif_stop_queue(pGobiDev->mpNetDev->net);
+   netif_carrier_off(pGobiDev->mpNetDev->net);
    #if LINUX_VERSION_CODE >= KERNEL_VERSION( 3,0,0 )
    if (pDev->net->flags & IFF_UP)
    dev_deactivate(pDev->net);
@@ -1040,7 +1128,17 @@ struct sk_buff *GobiNetDriverTxFixup(
    #else
    DBG( "\n" );
    #endif
-   if(pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)
+   if((pGobiDev->iQMUXEnable!=0)&&iIsValidQmuxSKB(pSKB))
+   {
+     if((pSKB->data[0]==00)
+         &&(pSKB->data[1]&0x8F))
+      {
+         DBG( "QMUX For sending to device");
+         //PrintHex (pSKB->data, pSKB->len);
+         return pSKB;
+      }
+   }
+   if((pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)&&(pGobiDev->iQMUXEnable==0))
    {
       DBG( "Dropped Packet : Not Connected\n" );
       dev_kfree_skb_any(pSKB);
@@ -1057,9 +1155,9 @@ struct sk_buff *GobiNetDriverTxFixup(
       if (skb_pull(pSKB, ETH_HLEN))
       {
          DBG( "For sending to device modified: ");
-      skb_reset_mac_header(pSKB);
-      skb_reset_network_header(pSKB);
-      skb_reset_transport_header(pSKB);
+         skb_reset_mac_header(pSKB);
+         skb_reset_network_header(pSKB);
+         skb_reset_transport_header(pSKB);
          PrintHex (pSKB->data, pSKB->len);
          return pSKB;
       }
@@ -1099,6 +1197,8 @@ static int GobiNetDriverRxFixup(
     sGobiUSBNet  *pGobiDev;
     struct ethhdr *pEth;
     struct iphdr *pIp;
+    u8 iIsQUXPacket=0;
+    struct net_device *pNetDev=NULL;
 
     DBG( "\n" );
 
@@ -1122,7 +1222,25 @@ static int GobiNetDriverRxFixup(
       gobi_usb_autopm_put_interface( pGobiDev->mpIntf );
     }
     #endif
-   if(pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)
+    if((pGobiDev->iQMUXEnable!=0)&&
+        iIsValidQmuxSKB(pSKB))
+   {
+      u32 length = pSKB->data[2];
+      length = (length<<8) + pSKB->data[3];
+      if(((pSKB->data[0]==0x00)||(pSKB->data[0]==0x01)||(pSKB->data[0]==0x02))
+         &&(pSKB->data[1]&0x8F))
+      {
+         iIsQUXPacket = iGetQmuxIDFromSKB(pSKB);
+         pNetDev = pSKB->dev = pGobiDev->pNetDevice[iIsQUXPacket-MUX_ID_START] ;
+         DBG( "MuxID:0x%02X From Modem: %d, %d:%d",
+            iIsQUXPacket,length,pSKB->data[2],pSKB->data[3]);
+         //PrintHex (pSKB->data, pSKB->len);
+         skb_pull(pSKB,QMUX_HEADER_LENGTH);
+         //DBG( "Remove MuxID From Modem modified: ");
+         //PrintHex (pSKB->data, pSKB->len);
+      }
+   }
+   else if(pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)
    {
       DBG( "Dropped Packet : Not Connected\n" );
       return 0;
@@ -1139,9 +1257,9 @@ static int GobiNetDriverRxFixup(
     /* Copy data section to a temporary buffer */
     if (pSKB->head +ETH_HLEN > pSKB->data )
     {
-   memmove(pSKB->data+ETH_HLEN,pSKB->data, pSKB->len);
-    pSKB->len = pSKB->len + ETH_HLEN;
-    pSKB->tail = pSKB->tail + ETH_HLEN;
+       memmove(pSKB->data+ETH_HLEN,pSKB->data, pSKB->len);
+       pSKB->len = pSKB->len + ETH_HLEN;
+       pSKB->tail = pSKB->tail + ETH_HLEN;
     }
     else
     {
@@ -1151,12 +1269,14 @@ static int GobiNetDriverRxFixup(
     
     if (((*(u8 *)(pSKB->data + ETH_HLEN)) & 0xF0) == 0x40)
     {
-       ResetEthHeader(pDev,pSKB,1);
+       ResetEthHeader(pDev,pSKB,1,iIsQUXPacket);
+       if(iIsQUXPacket<=0)
        return 1;
     }
     else if(((*(u8 *)(pSKB->data + ETH_HLEN)) & 0xF0) == 0x60)
     {
-       ResetEthHeader(pDev,pSKB,0);
+       ResetEthHeader(pDev,pSKB,0,iIsQUXPacket);
+       if(iIsQUXPacket<=0)
        return 1;
     }
     else
@@ -1164,6 +1284,11 @@ static int GobiNetDriverRxFixup(
        skb_reset_mac_header(pSKB);
        skb_reset_network_header(pSKB);
        skb_reset_transport_header(pSKB);
+    }
+
+    if(iIsQUXPacket!=0)
+    {
+        return gobi_dev_forward_skb(pNetDev,pSKB);
     }
 
     pSKB->dev = pDev->net;
@@ -1765,6 +1890,11 @@ int GobiUSBNetOpen( struct net_device * pNet )
       GobiSetDownReason( pGobiDev, NO_NDIS_CONNECTION );
    }
 
+   if(pGobiDev->iQMUXEnable)
+   {  //Force Enable traffic
+      GobiClearDownReason( pGobiDev, NET_IFACE_STOPPED );
+      GobiClearDownReason( pGobiDev, NO_NDIS_CONNECTION );   
+   }
    // Pass to usbnet_open if defined
    if (pGobiDev->mpUSBNetOpen != NULL)
    {
@@ -1865,16 +1995,24 @@ int GobiUSBNetStop( struct net_device * pNet )
 }
 
 /* reset the Ethernet header with correct destionation address and ip protocol */
-void ResetEthHeader(struct usbnet *dev, struct sk_buff *skb, int isIpv4)
+void ResetEthHeader(struct usbnet *dev, struct sk_buff *skb, int isIpv4, int isQMUXPacket)
 {
      __be16 ip_type;
 
      skb_reset_mac_header(skb);
      skb_reset_network_header(skb);
      skb_reset_transport_header(skb);
-     /* replace the correct destination address */
-     memset(eth_hdr(skb)->h_source, 0, ETH_ALEN);
-     memcpy(eth_hdr(skb)->h_dest, dev->net->dev_addr, ETH_ALEN);
+          
+     if(isQMUXPacket)
+     {
+        memcpy(eth_hdr(skb)->h_dest, skb->dev->dev_addr, ETH_ALEN);
+        memcpy(eth_hdr(skb)->h_source, skb->dev->dev_addr, ETH_ALEN);
+     }
+     else
+     {
+        memset(eth_hdr(skb)->h_source, 0, ETH_ALEN);
+        memcpy(eth_hdr(skb)->h_dest, dev->net->dev_addr, ETH_ALEN);
+     }
      ip_type = isIpv4 == 1 ? ETH_P_IP : ETH_P_IPV6;
      eth_hdr(skb)->h_proto = cpu_to_be16(ip_type);
      
@@ -1904,7 +2042,7 @@ int FixEthFrame(struct usbnet *dev, struct sk_buff *skb, int isIpv4)
         else
         {
             DBG( "multicast MAC address: destination mismatched, IPV%s header modified:", isIpv4 == 1 ? "4":"6");
-            ResetEthHeader(dev, skb, isIpv4);
+            ResetEthHeader(dev, skb, isIpv4,0);
             return 1;
         }
     }
@@ -1926,7 +2064,7 @@ int FixEthFrame(struct usbnet *dev, struct sk_buff *skb, int isIpv4)
             if (skb->len >= (total_len+ETH_HLEN))
             {
                 DBG( "IPv4 header modified: ");
-                ResetEthHeader(dev, skb, isIpv4);
+                ResetEthHeader(dev, skb, isIpv4,0);
                 return 1;
             }
         }
@@ -1939,7 +2077,7 @@ int FixEthFrame(struct usbnet *dev, struct sk_buff *skb, int isIpv4)
             if (skb->len >= (payload_len+ETH_HLEN+IPV6HDR_LENGTH))
             {
                 DBG( "IPv6 header modified: ");
-                ResetEthHeader(dev, skb, isIpv4);
+                ResetEthHeader(dev, skb, isIpv4,0);
                 return 1;
             }
         }
@@ -1985,7 +2123,16 @@ static int GobiNetDriverLteRxFixup(struct usbnet *dev, struct sk_buff *skb)
       gobi_usb_autopm_put_interface( pGobiDev->mpIntf );
    }
    #endif
-   if(pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)
+   if((pGobiDev->iQMUXEnable!=0)&&
+        iIsValidQmuxSKB(skb))
+   {
+      u32 length = skb->data[2];
+      length = (length<<8) + skb->data[3];
+      //DBG( "MuxID: 0x%02X, Length:0x%02X%02X",skb->data[1],skb->data[2],skb->data[3]);
+      //PrintHex (skb->data, skb->len);
+      return GobiNetDriverRxFixup(dev,skb);
+   }
+   else if(pGobiDev->iNetLinkStatus!=eNetDeviceLink_Connected)
    {
       DBG( "Dropped Packet : Not Connected\n" );
       return 0;
@@ -2140,7 +2287,7 @@ static const struct usb_device_id GobiVIDPIDTable [] =
    {QMI_G3K_DEVICE(0x1199, 0x9019)},
    {QMI_G3K_DEVICE(0x03f0, 0x371d)},
    // 9x15
-   {QMI_9X15_DEVICE(0x1199, 0x9071)}, /* consider 9x30 same as 9x15 at the moment, change it later if needed */
+   {QMI_9X15_DEVICE(0x1199, 0x9071)}, /* consider 9x30 and 9x50 same as 9x15 at the moment, change it later if needed */
    {QMI_9X15_DEVICE(0x1199, 0x68C0)},
    {QMI_9X15_DEVICE(0x1199, 0x9041)},
    {QMI_9X15_DEVICE(0x1199, 0x9051)},
@@ -2152,6 +2299,11 @@ static const struct usb_device_id GobiVIDPIDTable [] =
 
    //9x30
    {QMI_9X15_DEVICE(0x1199, 0x9070)},
+
+   //9x50
+   {QMI_9X15_DEVICE(0x1199, 0x9090)},
+   {QMI_9X15_DEVICE(0x1199, 0x9091)},
+   {QMI_9X15_DEVICE(0x1199, 0x90b1)},
 
    //AR759x
    {QMI_9X15_DEVICE(0x1199, 0x9100)},
@@ -2240,6 +2392,7 @@ int GobiUSBNetProbe(
    struct usbnet * pDev;
    sGobiUSBNet * pGobiDev;
    struct ethhdr *eth;
+   int iNumberOfMUXIDSupported=0;
 
 #if 0
    /* There exists a race condition in the firmware that sometimes results
@@ -2256,7 +2409,54 @@ int GobiUSBNetProbe(
 #endif
 
    ifacenum =  pIntf->cur_altsetting->desc.bInterfaceNumber;
-
+   if(ifacenum==8)
+   {
+      if(pIntf->cur_altsetting->string !=NULL)
+      {
+         char *numberptr = strstr(pIntf->cur_altsetting->string,RMNET_QMAP_STRING);
+         DBG("String %s\n", pIntf->cur_altsetting->string );
+         if((numberptr!=NULL)&&
+            (strlen(pIntf->cur_altsetting->string)> strlen(RMNET_QMAP_STRING)) )
+         {
+            long result =0;
+            numberptr = pIntf->cur_altsetting->string + strlen(RMNET_QMAP_STRING);
+            if(kstrtol (numberptr, 10,&result)==0)
+            {
+               iNumberOfMUXIDSupported = (int)result;
+            }
+            if(iNumberOfMUXIDSupported>MAX_MUX_NUMBER_SUPPORTED)
+            {
+               printk( KERN_INFO "Only supported MUXID(MAX:%d):%d",MAX_MUX_NUMBER_SUPPORTED,iNumberOfMUXIDSupported);
+               iNumberOfMUXIDSupported = iMaxQMUXSupported;
+            }
+            if(iNumberOfMUXIDSupported<=0)
+            {
+                printk( KERN_INFO "No QMAP RMNET is supported");
+            }
+            else
+            {
+               DBG("Number of RMNET supported %d\n", iNumberOfMUXIDSupported );
+            }
+         }
+      }
+      else
+      {
+         DBG("String NULL\n");
+         iNumberOfMUXIDSupported = iMaxQMUXSupported;
+      }
+      if(iMaxQMUXSupported!=-1)
+      {
+         if(MAX_MUX_NUMBER_SUPPORTED<iMaxQMUXSupported)
+         {
+             iNumberOfMUXIDSupported = MAX_MUX_NUMBER_SUPPORTED;
+         }
+         else
+         {
+            iNumberOfMUXIDSupported = iMaxQMUXSupported;
+         }
+         printk( KERN_INFO "Override Number Of RMNET supported to :%d\n",iNumberOfMUXIDSupported);
+      }
+   }
    status = usbnet_probe( pIntf, pVIDPIDs );
    if (status < 0)
    {
@@ -2417,7 +2617,54 @@ int GobiUSBNetProbe(
 #else
    GobiSetDownReason( pGobiDev, NO_NDIS_CONNECTION );
 #endif
-
+   pGobiDev->iQMUXEnable = 0;
+   pGobiDev->nRmnet = 0;
+   if(ifacenum==8)// only allow interface 8 to allow qmux
+   {
+      if((iQMAPEnable!=0)&&(iNumberOfMUXIDSupported>0)) 
+      {
+         int iMuxID=0;
+         int index=0;
+         pGobiDev->iQMUXEnable = 1;
+         if (rtnl_trylock())
+         {
+            if (!netif_running(pDev->net)) 
+            {
+               printk( KERN_INFO "QMAP Enabled\n");
+               for(index=0;index<MAX_QCQMI;index++)
+               {
+                   if (qmux_table[index] == 0)
+                   {
+                       qmux_table[index]=1;
+                       break;
+                   }
+               }
+               pGobiDev->iDeviceMuxID = index;
+               
+               if(iNumberOfMUXIDSupported>MAX_MUX_NUMBER_SUPPORTED)
+               {
+                  pGobiDev->iMaxMuxID = MAX_MUX_NUMBER_SUPPORTED;
+               }
+               else
+               {
+                  pGobiDev->iMaxMuxID = iNumberOfMUXIDSupported;
+               }
+               pGobiDev->nRmnet = pGobiDev->iMaxMuxID;
+               for(iMuxID=MUX_ID_START;iMuxID<(pGobiDev->iMaxMuxID+MUX_ID_START);iMuxID++)
+               {
+                  pGobiDev->pNetDevice[iMuxID-MUX_ID_START] = gobi_qmimux_register_device(pDev->net,index,iMuxID);
+               }
+            }
+            else
+            {
+               printk("running\n");
+            }
+            rtnl_unlock();
+         }
+         GobiClearDownReason( pGobiDev, NO_NDIS_CONNECTION );
+      }
+   }
+   
    // Register QMI
    if (pDev->driver_info->data &&
           test_bit(BIT_9X15, &pDev->driver_info->data)) {
@@ -2452,20 +2699,20 @@ int GobiUSBNetProbe(
 void GobiUSBDisconnect(struct usb_interface *pIntf)
 {
    sGobiUSBNet * pGobiDev;
-    struct usbnet * pDev;
-    DBG("GobiUSBDisconnect\n");
-    #if (LINUX_VERSION_CODE > KERNEL_VERSION( 2,6,23 ))
-    pDev = usb_get_intfdata( pIntf );
-    #else
-    pDev = (struct usbnet *)pIntf->dev.platform_data;
-    #endif
-    if(pDev==NULL)
-    {
-       DBG( "failed to get interface\n" );
-       return ;
-    }
-    else
-    {    
+   struct usbnet * pDev;
+   DBG("GobiUSBDisconnect\n");
+   #if (LINUX_VERSION_CODE > KERNEL_VERSION( 2,6,23 ))
+   pDev = usb_get_intfdata( pIntf );
+   #else
+   pDev = (struct usbnet *)pIntf->dev.platform_data;
+   #endif
+   if(pDev==NULL)
+   {
+      DBG( "failed to get interface\n" );
+      return ;
+   }
+   else
+   {
        pGobiDev = (sGobiUSBNet *)pDev->data[0];
        if (pGobiDev == NULL)
        {
@@ -2475,6 +2722,7 @@ void GobiUSBDisconnect(struct usb_interface *pIntf)
        pGobiDev->mbUnload = eStatUnloading;
    }
    usbnet_stop(pDev->net);//IPV6 lock error
+   StopQMUXNet(pGobiDev);
    usbnet_disconnect(pIntf);
    usb_set_intfdata(pIntf, NULL);
 }
@@ -2540,7 +2788,10 @@ static int __init GobiUSBNetModInit( void )
 #endif
 
    for(i=0;i<MAX_QCQMI;i++)
+   {
        qcqmi_table[i] = 0;
+       qmux_table[i] = 0;
+   }
    #if _PROBE_LOCK_
    sema_init( &taskLoading, SEMI_INIT_DEFAULT_VALUE );
    up(&taskLoading);
@@ -2656,6 +2907,74 @@ void SendWakeupControlMsg(
    
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
+int dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
+{
+   skb_orphan(skb);
+   if (!(dev->flags & IFF_UP))
+   {
+      DBG("IFF_UP\n");
+      return NET_RX_DROP;
+   }
+   if (skb->len > (dev->mtu + dev->hard_header_len))
+   {
+      DBG("LENGTH\n");
+      return NET_RX_DROP;
+   }
+
+   skb_dst_drop(skb);
+   skb->tstamp.tv64 = 0;
+   skb->pkt_type =  PACKET_HOST;
+   skb->protocol = eth_type_trans(skb, dev);
+   skb->mark = 0;
+   secpath_reset(skb);
+   nf_reset(skb);
+   if (!list_empty(&skb->dev->napi_list))
+   {
+      DBG("napi_list\n");
+   }
+   return netif_rx(skb);
+}
+#endif
+/*===========================================================================
+METHOD:
+   gobi_dev_forward_skb (Private Method)
+
+DESCRIPTION:
+   Forward SKB to other network device
+
+PARAMETERS
+   dev          [ I ] - Pointer to target net_device
+   skb          [ I ] - SKB buffer
+
+RETURN VALUE:
+   NULL
+===========================================================================*/
+int gobi_dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
+{
+   struct sk_buff *nskb;
+   int result = 0;
+   nskb = skb_copy(skb, GFP_ATOMIC); 
+   nskb->dev = dev;
+   secpath_reset(nskb);
+   skb_dst_drop(nskb);
+   nf_reset(nskb);
+   nskb->ip_summed = CHECKSUM_NONE;
+   nskb->dev = dev;
+   result = dev_forward_skb(dev, nskb); 
+   if ( result != NET_RX_SUCCESS)
+   {
+      DBG( "Forword fail:%d\n",result );
+      dev->stats.rx_errors++;
+      return 1;
+   }
+   else
+   {
+      DBG( "NET_RX_SUCCESS\n" );
+   }
+   return 0;
+}
+
 module_exit( GobiUSBNetModExit );
 
 MODULE_VERSION( DRIVER_VERSION );
@@ -2681,3 +3000,11 @@ module_param( iTEEnable, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( iTEEnable, "-1 : Ignore TE flow Control, 0 : TE Flow Control disabled, 1 : TE Flow Control enabled" );
 module_param( iRAWIPEnable, int, S_IRUGO | S_IWUSR );
 MODULE_PARM_DESC( iRAWIPEnable, "RAWIP enabled or not" );
+MODULE_PARM_DESC( iQMAPEnable, "-1: Auto, 0 : QMAP disabled, 1 : QMAP enabled" );
+module_param( iQMAPEnable, int, S_IRUGO | S_IWUSR );
+MODULE_PARM_DESC( iQMAPEnable, "QMAP enabled or not" );
+
+MODULE_PARM_DESC( iMaxQMUXSupported, "0 : Auto" );
+module_param( iMaxQMUXSupported, int, S_IRUGO | S_IWUSR );
+MODULE_PARM_DESC( iMaxQMUXSupported, "-1: Auto, Max QMUX instance support" );
+
