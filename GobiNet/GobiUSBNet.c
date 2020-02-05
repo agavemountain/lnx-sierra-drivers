@@ -137,7 +137,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2018-12-21/SWI_2.55"
+#define DRIVER_VERSION "2018-03-08/SWI_2.56"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -223,6 +223,9 @@ int txQueueLength = 100;
 static struct class * gpClass;
 struct semaphore taskLoading;
 
+// To idenitify spin_is_locked is worked as expected.
+bool iIsSpinIsLockedSupported = true;
+
 /**************************************************/
 bool isModuleUnload(sGobiUSBNet *pDev);
 int FixEthFrame(struct usbnet *dev, struct sk_buff *skb, int isIpv4);
@@ -250,6 +253,7 @@ void gobi_usbnet_stop(struct net_device *net);
 int gobi_rtnl_trylock(void);
 void stop_virtual_netdev(struct net_device *dev);
 int iIsRemoteWakeupSupport(struct usbnet * pDev);
+bool isSpinLockCheckSupport(void);
 
 int CreateQMAPRxBuffer(sGobiUSBNet *pGobiDev)
 {
@@ -2768,6 +2772,8 @@ int GobiUSBNetProbe(
    pDev->data[0] = (unsigned long)pGobiDev;
    pGobiDev->iUSBState = USB_STATE_ATTACHED;
    pGobiDev->mpNetDev = pDev;
+   pGobiDev->iIsUSBReset = false;
+   atomic_set(&pGobiDev->aClientMemIsLock,CLIENT_MEMORY_UNLOCK);
 
    // Clearing endpoint halt is a magic handshake that brings 
    // the device out of low power (airplane) mode
@@ -3056,11 +3062,38 @@ bool isModuleUnload(sGobiUSBNet *    pDev)
    } 
    return false;
 }
+
+/*===========================================================================
+METHOD:
+   isSpinLockCheckSupport (Private Method)
+
+DESCRIPTION:
+   Check whether spin_is_locked is wokring.
+
+RETURN VALUE:
+   bool - true for supported
+          false for NOT supported
+===========================================================================*/
+bool isSpinLockCheckSupport(void)
+{
+   spinlock_t lLock;
+   bool bRet = false;
+   spin_lock_init(&lLock);
+   spin_lock_irq(&lLock);
+   if(spin_is_locked(&lLock)==1)
+   {
+      bRet = true;
+   }
+   spin_unlock_irq(&lLock);
+   return bRet;
+}
+
 static int __init GobiUSBNetModInit( void )
 {
    int i;
    int j;
    iModuleExit = 0;
+   iIsSpinIsLockedSupported = isSpinLockCheckSupport();
    gpClass = class_create( THIS_MODULE, "GobiQMI" );
    if (IS_ERR( gpClass ) == true)
    {
@@ -3088,6 +3121,10 @@ static int __init GobiUSBNetModInit( void )
    sema_init( &taskLoading, SEMI_INIT_DEFAULT_VALUE );
    up(&taskLoading);
    #endif
+   if(iIsSpinIsLockedSupported==false)
+   {
+      DBG("spin_is_locked is not supported\n");
+   }
    return usb_register( &GobiNet );
 }
 module_init( GobiUSBNetModInit );
@@ -3333,7 +3370,32 @@ RETURN VALUE:
 int GobiUSBLockReset( struct usb_interface * pIntf )
 {
    int ret =-1;
+   sGobiUSBNet * pGobiDev;
+   struct usbnet * pDev;
    struct usb_device *udev;
+   DBG("");
+#if (LINUX_VERSION_CODE > KERNEL_VERSION( 2,6,23 ))
+   pDev = usb_get_intfdata( pIntf );
+#else
+   pDev = (struct usbnet *)pIntf->dev.platform_data;
+#endif
+   if(pDev)
+   {
+      pGobiDev = (sGobiUSBNet *)pDev->data[0];
+      if (pGobiDev != NULL)
+      {
+          pGobiDev->iIsUSBReset = true;
+      }
+      else
+      {
+         printk(KERN_ERR "%sNULL sGobiUSBNet\n",__FUNCTION__);
+      }
+   }
+   else
+   {
+      printk(KERN_ERR "%sNULL intf data\n",__FUNCTION__);
+   }
+   
    if(!pIntf)
    {
       printk(KERN_ERR "NULL Intf\n");

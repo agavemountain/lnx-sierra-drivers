@@ -558,6 +558,13 @@ typedef struct sGobiUSBNet
    struct workqueue_struct *wqProcessReadCallback;
    struct delayed_work dwProcessReadCallback;
    struct urb *pReadURB;
+   int iIsUSBReset;
+   /**
+    * Workaround spin_is_locked not function as expected.
+    **/
+#define CLIENT_MEMORY_LOCK 1
+#define CLIENT_MEMORY_UNLOCK 0
+   atomic_t aClientMemIsLock;
 } sGobiUSBNet;
 
 /*=========================================================================*/

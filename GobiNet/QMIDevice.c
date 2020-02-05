@@ -175,6 +175,17 @@ enum {
 #define gobi_setup_timer(timer, fn, data) timer_setup(timer, fn, 0) 
 #endif
 
+#define RETURN_WHEN_DEVICE_ERR(x) \
+if(isModuleUnload(x))\
+{\
+   return -EFAULT;\
+}\
+else if(IsDeviceDisconnect(x))\
+{\
+  DBG( "Device Disconnected!\n" );\
+  return -ENXIO;\
+}\
+
 /* initially all zero */
 int qcqmi_table[MAX_QCQMI];
 int qmux_table[MAX_QCQMI];
@@ -241,6 +252,7 @@ void gobi_try_wake_up_process(struct task_struct * pTask);
 int gobi_work_busy(struct delayed_work *dw);
 extern int GobiUSBLockReset( struct usb_interface *pIntf );
 extern int iIsRemoteWakeupSupport(struct usbnet *pDev);
+extern bool iIsSpinIsLockedSupported;
 
 // IOCTL to generate a client ID for this service type
 #define IOCTL_QMI_GET_SERVICE_FILE 0x8BE0 + 1
@@ -644,11 +656,15 @@ int ForceFilpClose(struct file *pFilp)
 
 static inline int LocalClientMemLockSpinIsLock( sGobiUSBNet * pDev)
 {
-    if(pDev!=NULL)
-    {
-        return spin_is_locked(&pDev->mQMIDev.mClientMemLock);
-    }
-    return 0;
+   if(pDev!=NULL)
+   {
+      if(iIsSpinIsLockedSupported==false)
+      {
+         return atomic_read(&pDev->aClientMemIsLock);
+      }
+      return spin_is_locked(&pDev->mQMIDev.mClientMemLock);
+   }
+   return 0;
 }
 
 static inline unsigned long LocalClientMemLockSpinLockIRQSave( sGobiUSBNet * pDev, int line)
@@ -666,6 +682,15 @@ static inline unsigned long LocalClientMemLockSpinLockIRQSave( sGobiUSBNet * pDe
       printk("(%d)%s :%d Locked\n",task_pid_nr(current),__FUNCTION__,line);
       #endif
       pDev->mQMIDev.pTask = current;
+      if(LocalClientMemLockSpinIsLock(pDev) == 0)
+      {
+         iIsSpinIsLockedSupported = false;
+         DBG("spin_is_locked is not supported\n");
+      }
+      if(iIsSpinIsLockedSupported==false)
+      {
+         atomic_set(&pDev->aClientMemIsLock,CLIENT_MEMORY_LOCK);
+      }
       return 0;
    }
    mb();
@@ -689,6 +714,10 @@ static inline int LocalClientMemUnLockSpinLockIRQRestore( sGobiUSBNet * pDev, un
       printk("(%d)%s %d :%d\n",task_pid_nr(current),__FUNCTION__,__LINE__,line);
       #endif
       pDev->mQMIDev.pTask = NULL;
+      if(iIsSpinIsLockedSupported==false)
+      {
+         atomic_set(&pDev->aClientMemIsLock,CLIENT_MEMORY_UNLOCK);
+      }
       spin_unlock_irq( &pDev->mQMIDev.mClientMemLock);
    }
    else
@@ -847,6 +876,12 @@ void GobiClearDownReason(
     netif_carrier_on( pDev->mpNetDev->net );
 #else
    if (pDev->mDownReason == 0)
+   {
+      netif_carrier_on( pDev->mpNetDev->net );
+   }
+   else if ( netif_running(pDev->mpNetDev->net) && 
+             (reason==NO_NDIS_CONNECTION) &&
+             !test_bit(DRIVER_SUSPENDED, &pDev->mDownReason) )
    {
       netif_carrier_on( pDev->mpNetDev->net );
    }
@@ -5028,11 +5063,8 @@ int QMICTLSyncProc(sGobiUSBNet *pDev)
    unsigned long flags;
    u16 readBufferSize;
 
-   if (IsDeviceValid( pDev ) == false)
-   {
-      DBG( "Invalid device\n" );
-      return -EFAULT;
-   }
+   RETURN_WHEN_DEVICE_ERR(pDev);
+
    sema_init( &readSem, SEMI_INIT_DEFAULT_VALUE );
    mb();
    writeBufferSize= QMICTLSyncReqSize();
@@ -5208,7 +5240,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
       {
          return -1;
       }
-      
+      RETURN_WHEN_DEVICE_ERR(pDev);
       result = GetClientID( pDev, QMICTL ,NULL);
 
       if(gobi_kthread_should_stop())
@@ -5216,10 +5248,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
          return -1;
       }
       
-      if(pDev->mbUnload != eStatRegister)
-      {
-         return result;
-      }
+      RETURN_WHEN_DEVICE_ERR(pDev);
       if (result != 0)
       {
          if(i++>MAX_RETRY)
@@ -5271,20 +5300,14 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
       DBG( "Device unresponsive to QMI\n" );
       return -ETIMEDOUT;
    }
-   if(pDev->mbUnload != eStatRegister)
-   {
-      return -EFAULT;
-   }
+   RETURN_WHEN_DEVICE_ERR(pDev);
    // Initiate QMI CTL Sync Procedure
    DBG( "Sending QMI CTL Sync Request\n" );
    i=0;
    do
    {
       result = QMICTLSyncProc(pDev);
-      if(isModuleUnload(pDev))
-      {
-         return -EFAULT;;
-      }
+      RETURN_WHEN_DEVICE_ERR(pDev);
       if (result != 0)
       {
          if(i++>MAX_RETRY)
@@ -5329,10 +5352,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
          {
             result = QMIWDASetDataFormat (pDev, eSKIP_TE_FLOW_CONTROL_TLV,pDev->iQMUXEnable);
          }
-         if(isModuleUnload(pDev))
-         {
-            return -EFAULT;;
-         }
+         RETURN_WHEN_DEVICE_ERR(pDev);
          if(i++>MAX_RETRY)
          {
             if(pDev->iDataMode==eDataMode_Ethernet)
@@ -5405,10 +5425,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    {
       // Setup WDS callback
       result = SetupQMIWDSCallback( pDev );
-      if(isModuleUnload(pDev))
-      {
-         return -EFAULT;
-      }
+      RETURN_WHEN_DEVICE_ERR(pDev);
       if (result != 0)
       {
          if(i++>MAX_RETRY)
@@ -5425,12 +5442,9 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
        do
        {
           result = QMIDMSSWISetFCCAuth( pDev );
-          if(pDev->mbUnload != eStatRegister)
-          {
-             return -EFAULT;;
-          }
+          RETURN_WHEN_DEVICE_ERR(pDev);
           if (result != 0)
-          {
+          { 
             if(i++>MAX_RETRY)
             {
                return result;
@@ -5443,10 +5457,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    do
    {
       result = QMIDMSGetMEID( pDev );
-      if(pDev->mbUnload != eStatRegister)
-      {
-          return -EFAULT;;
-      }
+      RETURN_WHEN_DEVICE_ERR(pDev);
       if (result != 0)
       {
          if(i++>MAX_RETRY)
@@ -5462,10 +5473,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    do
    {
       result = QMICTLGetVersionInfo(pDev);
-      if(isModuleUnload(pDev))
-      {
-         return -EFAULT;;
-      }
+      RETURN_WHEN_DEVICE_ERR(pDev);
       if (result != 0)
       {
          if(i++ > MAX_RETRY)
@@ -6225,7 +6233,19 @@ int QMIReady(
       {
          return -1;
       }
-      
+       if(isModuleUnload(pDev))
+      {
+         if(pWriteBuffer)
+            kfree( pWriteBuffer );
+         return -EFAULT;
+      }
+      else if(IsDeviceDisconnect(pDev))
+      {
+         DBG( "Device Disconnected!\n" );
+         if(pWriteBuffer)
+            kfree( pWriteBuffer );
+         return -ENXIO;\
+      }
       // Start read
       transactionID =QMIXactionIDGet(pDev);
       
@@ -6265,13 +6285,27 @@ int QMIReady(
          LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
          return -1;
       }
+       if(isModuleUnload(pDev))
+      {
+         if(pWriteBuffer)
+            kfree( pWriteBuffer );
+         return -EFAULT;
+      }
+      else if(IsDeviceDisconnect(pDev))
+      {
+         DBG( "Device Disconnected!\n" );
+         if(pWriteBuffer)
+            kfree( pWriteBuffer );
+         return -ENXIO;\
+      }
 
       if(curTime < timeout)
       {
          int iScaleCount = 0;
          for(iScaleCount=0;iScaleCount<100;iScaleCount++)
          {
-            if( gobi_kthread_should_stop() )
+            if( gobi_kthread_should_stop() ||
+                IsDeviceDisconnect(pDev) )
             {
                if(pWriteBuffer)
                kfree(pWriteBuffer);
@@ -6282,7 +6316,8 @@ int QMIReady(
                return -1;
             }
             msleep( 10 );//wait_ms(10);//msleep( 10 );
-            if(gobi_kthread_should_stop())
+            if(gobi_kthread_should_stop()||
+                IsDeviceDisconnect(pDev))
             {
                if(pWriteBuffer)
                kfree(pWriteBuffer);
@@ -6565,11 +6600,7 @@ int SetupQMIWDSCallback( sGobiUSBNet * pDev )
    u16 writeBufferSize;
    u16 WDSClientID;
 
-   if (IsDeviceValid( pDev ) == false)
-   {
-      DBG( "Invalid device\n" );
-      return -EFAULT;
-   }
+   RETURN_WHEN_DEVICE_ERR(pDev);
 
    result = GetClientID( pDev, QMIWDS,NULL );
    if (result < 0)
@@ -6676,11 +6707,8 @@ int QMIDMSSWISetFCCAuth( sGobiUSBNet * pDev )
    unsigned long flags;
    DBG("\n");
 
-   if (IsDeviceValid( pDev ) == false)
-   {
-      DBG( "Invalid device\n" );
-      return -EFAULT;
-   }
+   RETURN_WHEN_DEVICE_ERR(pDev);
+
    sema_init( &readSem, SEMI_INIT_DEFAULT_VALUE );
    mb();
 
@@ -6802,11 +6830,7 @@ int QMIDMSGetMEID( sGobiUSBNet * pDev )
    unsigned long flags;
    struct semaphore readSem;
 
-   if (IsDeviceValid( pDev ) == false)
-   {
-      DBG( "Invalid device\n" );
-      return -EFAULT;
-   }
+   RETURN_WHEN_DEVICE_ERR(pDev);
 
    sema_init( &readSem, SEMI_INIT_DEFAULT_VALUE );
    mb();
@@ -6939,6 +6963,7 @@ int QMICTLSetDataFormat( sGobiUSBNet * pDev )
    unsigned long flags;
 
    //DBG("\n");
+   RETURN_WHEN_DEVICE_ERR(pDev);
 
    // Send SET DATA FORMAT REQ
    writeBufferSize = QMICTLSetDataFormatReqSize();
@@ -7168,6 +7193,8 @@ int QMICTLGetVersionInfo( sGobiUSBNet * pDev )
 
    DBG("\n");
 
+   RETURN_WHEN_DEVICE_ERR(pDev);
+
    // Send CTL GET VERSION INFO REQ
    writeBufferSize = QMICTLGetVersionInfoReqSize();
 
@@ -7302,11 +7329,7 @@ int QMIWDASetDataFormat( sGobiUSBNet * pDev, int te_flow_control , int iqmuxenab
    u16 uTID=1;
    //DBG("\n");
 
-   if (IsDeviceValid( pDev ) == false)
-   {
-      DBG( "Invalid device\n" );
-      return -EFAULT;
-   }
+   RETURN_WHEN_DEVICE_ERR(pDev);
    barrier();
    sema_init( &readSem, SEMI_INIT_DEFAULT_VALUE );
    mb();
@@ -9799,11 +9822,14 @@ void GobiCancelDelayWorkWorkQueue(
       }
       dev = interface_to_usbdev(pGobiDev->mUsb_Interface);
       ret = usb_lock_device_for_reset(dev, NULL);
-      if(ret==0)
+      if( (ret==0) ||
+          (pGobiDev->iIsUSBReset==false) )
       {
-
-         //Prevent Deadlock GobiUSBLockReset
-         usb_unlock_device(dev);
+         if(ret==0)
+         {
+            //Prevent Deadlock GobiUSBLockReset
+            usb_unlock_device(dev);
+         }
          flag = gobi_work_busy(dw);
          if(flag)
          {
