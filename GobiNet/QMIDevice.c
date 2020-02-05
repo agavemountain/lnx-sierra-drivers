@@ -264,6 +264,9 @@ int gobi_work_busy(struct delayed_work *dw);
 extern int GobiUSBLockReset( struct usb_interface *pIntf );
 extern int iIsRemoteWakeupSupport(struct usbnet *pDev);
 extern bool iIsSpinIsLockedSupported;
+bool isFilpSignalPending(sQMIFilpStorage *pFilpData);
+void ReleaseFilpClientID(sQMIFilpStorage *pFilpData);
+void assign_filp_pointer_to_null(struct file *filp);
 
 // IOCTL to generate a client ID for this service type
 #define IOCTL_QMI_GET_SERVICE_FILE 0x8BE0 + 1
@@ -655,7 +658,9 @@ int gobi_filp_close(struct file *filp, fl_owner_t id)
 
    if (filp->f_op->flush)
       retval = filp->f_op->flush(filp, id);
+   make_bad_inode(inode);
    fput(filp);
+   assign_filp_pointer_to_null(filp);
    return retval;
 }
 
@@ -1160,7 +1165,8 @@ void ReadCallback( struct urb * pReadURB )
    result = ParseQMUX( &clientID,
                        pData,
                        dataSize );
-   if(clientID==QMICTL)
+   if( (clientID==QMICTL) &&
+       (result > 0) )
    {
       u8 u8Type = 0;
       u16 u16MsgID = 0;
@@ -2748,6 +2754,11 @@ int GetClientID(
          result = -ETIMEDOUT;
          return result;
       }
+      if ((IsDeviceDisconnect(pDev)==false) &&
+            IsDeviceValid( pDev ))
+      {
+         pDev->mReleaseClientIDFail = 0;
+      }
    }
    else
    {
@@ -3493,8 +3504,7 @@ long UserspaceunlockedIOCTL(
 
    if(pFilpData->mDeviceInvalid==1)
    {
-      DBG( "Clsoing.." );
-      gobi_filp_close(pFilp,NULL);
+      DBG( "Closing.." );
       return -ENXIO;
    }
    if(pFilpData->iIsClosing==1)
@@ -4163,6 +4173,7 @@ int UserspaceClose(
    refcnt = atomic_long_read(&pFilp->f_count);
    if (refcnt > 1)
    {
+      pFilpData = (sQMIFilpStorage *)pFilp->private_data;
       if(current->exit_signal!=SIGCHLD)
       {
           if((IsOtherTaskUsingFilp(pFilp) ==1)&&
@@ -4179,10 +4190,24 @@ int UserspaceClose(
          if(!IsOpenTaskIsCurrent(pFilp))
          {
             DBG( "f_count %ld - ignoring close\n", refcnt);
+            if(signal_group_exit(current->signal))
+            {
+               ReleaseFilpClientID(pFilpData);
+            }
             return -EBUSY;
          }
       }
       DBG("f_count %ld - close %d %d\n", refcnt,IsOtherTaskUsingFilp(pFilp),IsOpenTaskIsCurrent(pFilp));
+      if ( (isFilpSignalPending(pFilpData)==false) &&
+            !IsDeviceDisconnect(pFilpData->mpDev) )
+      {
+         DBG( "!SignalPending - ignoring close\n");
+         if(IsOpenTaskIsCurrent(pFilp))
+         {
+            ReleaseFilpClientID(pFilpData);
+         }
+         return -EBUSY;
+      }
    }
    pFilpData = (sQMIFilpStorage *)pFilp->private_data;
    if (pFilpData == NULL)
@@ -4692,7 +4717,6 @@ ssize_t UserspaceWrite(
    if(pFilpData->mDeviceInvalid)
    {
       DBG( "mDeviceInvalid\n");
-      gobi_filp_close(pFilp,NULL);
       return -ENXIO;
    }
 
@@ -4838,6 +4862,9 @@ unsigned int UserspacePoll(
        DBG("SKIP AddToNotifyList\n");
    }
 
+   // End critical section
+   LocalClientMemUnLockSpinLockIRQRestore ( pFilpData->mpDev ,flags,__LINE__);
+
    poll_wait( pFilp, &pClientMem->mWaitQueue, pPollTable );
 
    if (pClientMem->mpList != NULL)
@@ -4845,9 +4872,16 @@ unsigned int UserspacePoll(
       status |= POLLIN | POLLRDNORM;
    }
 
-   // End critical section
-   LocalClientMemUnLockSpinLockIRQRestore ( pFilpData->mpDev ,flags,__LINE__);
-
+   if (IsDeviceValid( pFilpData->mpDev ) == false)
+   {
+      DBG( "Invalid device! Updating f_ops\n" );
+      return POLLERR;
+   }
+   if(IsDeviceDisconnect(pFilpData->mpDev))
+   {
+      DBG( "Device Disconnected!\n" );
+      return -ENXIO;
+   }
    // Always ready to write 
    return (status | POLLOUT | POLLWRNORM);
 }
@@ -5498,7 +5532,7 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    do
    {
       // Setup WDS callback
-      result = SetupQMIWDSCallback( pDev );
+      result = SetupQMIWDSCallback( pDev , 0 );
       RETURN_WHEN_DEVICE_ERR(pDev);
       if (result != 0)
       {
@@ -5570,19 +5604,6 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    {
       return result;
    }
-   for(i=0;i<MAX_QCQMI;i++)
-   {
-       if (qcqmi_table[i] == 0)
-           break;
-   }
-   
-   if (i == MAX_QCQMI)
-   {
-       printk(KERN_WARNING "no free entry available at qcqmi_table array\n");
-       return -ENOMEM;
-   }
-   qcqmi_table[i] = 1;
-   pDev->mQMIDev.qcqmi = i;
 
    // Always print this output
    printk( KERN_INFO "creating qcqmi%d\n",
@@ -5630,6 +5651,13 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
        return -ENOMEM;
    }
 
+  if(pDev->iIPAlias==0)
+  {
+      for(i=0;i<pDev->iMaxMuxID;i++)
+      {
+         SetupQMIWDSCallback( pDev,MUX_ID_START+i);
+      }
+  }   
   // Success
    return 0;
 }
@@ -5649,6 +5677,10 @@ RETURN VALUE:
 ===========================================================================*/
 void wakeup_target_process(struct task_struct * pTask)
 {
+   if(signal_group_exit(current->signal))
+   {
+      return ;
+   }
    if(pTask!=NULL)
    {
       struct list_head *list = NULL;
@@ -6031,6 +6063,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
                              0,
                              100 );
       pDev->mbUnload = eStatUnloaded;
+      release_qcqmi_from_table(pDev->mQMIDev.qcqmi);
       gobi_flush_work();
       return;
    }
@@ -6068,6 +6101,11 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    GobiDestoryWorkQueue(pDev);   
    if(pDev->WDSClientID!=(u16)-1)
    ReleaseClientID( pDev, pDev->WDSClientID );
+   for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
+   {
+      if(pDev->QMUXWDSCientID[i] !=(u16)-1)
+         ReleaseClientID( pDev, pDev->QMUXWDSCientID[i]  );
+   }
 
    gobi_flush_work();
    wait_interrupt();
@@ -6161,6 +6199,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    if (pDev->mQMIDev.mbCdevIsInitialized == false)
    {
       pDev->mbUnload = eStatUnloaded;
+      release_qcqmi_from_table(pDev->mQMIDev.qcqmi);
       return;
    }
 
@@ -6223,7 +6262,7 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
                       pDev->mQMIDev.mDevNum );
    }
 
-   qcqmi_table[pDev->mQMIDev.qcqmi] = 0;
+   release_qcqmi_from_table(pDev->mQMIDev.qcqmi);
 
    // Hold onto cdev memory location until everyone is through using it.
    // Timeout after 30 seconds (10 ms interval).  Timeout should never happen,
@@ -6603,6 +6642,35 @@ void QMIWDSCallback(
          }
       }
    }
+   if(pDev->WDSClientID == clientID)
+   {
+      DBG( "clientID :0x%04x\n", clientID);
+   }
+   else
+   {
+      int i =0;
+      for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
+      {
+         if(pDev->QMUXWDSCientID[i]==clientID)
+         {
+            DBG( "0x%02x clientID :0x%04x %s\n",
+               i+MUX_ID_START,
+               clientID,
+               (pDev->bLinkState == true) ? "connected" : "disconnected");
+            if(pDev->iIPAlias==0)
+            {
+               if(pDev->bLinkState == true)
+               {
+                  netif_carrier_on( pDev->pNetDevice[i] );
+               }
+               else
+               {
+                  netif_carrier_off( pDev->pNetDevice[i] );
+               }
+            }
+         }
+      }
+   }
    if(pReadBuffer)
    kfree( pReadBuffer );
    pReadBuffer = NULL;
@@ -6691,17 +6759,19 @@ DESCRIPTION:
 
 PARAMETERS:
    pDev     [ I ] - Device specific memory
+   QMUXID   [ I ] - QMUX ID
 
 RETURN VALUE:
    int - 0 for success
          Negative errno for failure
 ===========================================================================*/
-int SetupQMIWDSCallback( sGobiUSBNet * pDev )
+int SetupQMIWDSCallback( sGobiUSBNet * pDev  ,u8 QMUXID)
 {
    int result;
    void * pWriteBuffer;
    u16 writeBufferSize;
    u16 WDSClientID;
+   u16 tid = 1+QMUXID;
 
    RETURN_WHEN_DEVICE_ERR(pDev);
 
@@ -6711,7 +6781,45 @@ int SetupQMIWDSCallback( sGobiUSBNet * pDev )
       return result;
    }
    pDev->WDSClientID = WDSClientID = result;
-
+   if(QMUXID>=MUX_ID_START)
+   {
+      pDev->QMUXWDSCientID[QMUXID-MUX_ID_START] = WDSClientID = result;
+      DBG( "MUXID:0x%02x, WDSClientID:0x%04x\n",QMUXID, WDSClientID);
+   }
+   else
+   {
+      pDev->WDSClientID = WDSClientID = result;
+      DBG("WDSClientID:0x%04x",WDSClientID);
+   }
+   // QMI WDS Set QMUX ID
+   if(QMUXID>=MUX_ID_START)
+   {
+      writeBufferSize = QMIWDSSetQMuxIDReqSize();
+      pWriteBuffer = kmalloc( writeBufferSize, GOBI_GFP_KERNEL );
+      if (pWriteBuffer == NULL)
+      {
+         return -ENOMEM;
+      }
+      result = QMIWDSSetQMuxIDReq( pWriteBuffer,
+                                     writeBufferSize,
+                                     tid++,
+                                     QMUXID);
+      if (result < 0)
+      {
+         kfree( pWriteBuffer );
+         return result;
+      }
+      result = WriteSync( pDev,
+                       pWriteBuffer,
+                       writeBufferSize,
+                       WDSClientID );
+      kfree( pWriteBuffer );
+ 
+      if (result < 0)
+      {
+         return result;
+      }
+   }
    // QMI WDS Set Event Report
    writeBufferSize = QMIWDSSetEventReportReqSize();
    pWriteBuffer = kmalloc( writeBufferSize, GOBI_GFP_KERNEL );
@@ -6722,7 +6830,7 @@ int SetupQMIWDSCallback( sGobiUSBNet * pDev )
 
    result = QMIWDSSetEventReportReq( pWriteBuffer,
                                      writeBufferSize,
-                                     1 );
+                                     tid++ );
    if (result < 0)
    {
       kfree( pWriteBuffer );
@@ -6750,7 +6858,7 @@ int SetupQMIWDSCallback( sGobiUSBNet * pDev )
 
    result = QMIWDSGetPKGSRVCStatusReq( pWriteBuffer,
                                        writeBufferSize,
-                                       2 );
+                                       tid++ );
    if (result < 0)
    {
       kfree( pWriteBuffer );
@@ -8376,6 +8484,14 @@ bool IsDeviceDisconnect(sGobiUSBNet *pDev)
    if(!pDev)
       return true;
    mb();
+   if(pDev->iUSBState == USB_STATE_NOTATTACHED)
+      return true;
+   if(pDev->iIsUSBReset)
+   {
+      pDev->iUSBState = USB_STATE_NOTATTACHED;
+      mb();
+      return true;
+   }
    #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,33 ))
    if(pDev->mpIntf==NULL)
    {
@@ -8388,8 +8504,7 @@ bool IsDeviceDisconnect(sGobiUSBNet *pDev)
       return true;
    }
    #endif
-   if(pDev->iUSBState == USB_STATE_NOTATTACHED)
-      return true;
+
    if(!interface_to_usbdev(pDev->mpIntf))
       return true;
    if (interface_to_usbdev(pDev->mpIntf)->state == USB_STATE_NOTATTACHED )
@@ -10084,8 +10199,11 @@ bool TransceiveReleaseClientID(
                if(result<0)
                {
                   DBG( " WriteSyncNoRetry error %d\n", result );
-                  pDev->mReleaseClientIDFail = 1;
-                  bRet = false;
+                  if(-ERESTARTSYS!=result)
+                  {
+                     pDev->mReleaseClientIDFail = 1;
+                     bRet = false;
+                  }
                   flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
                   RemoveAndPopNotifyList(pDev,QMICTL,0,eClearCID);
                   LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
@@ -10339,3 +10457,151 @@ int GetTxRxStat(sGobiUSBNet *pGobiDev,int Channel)
    return 0;
 }
 #endif
+
+/*===========================================================================
+isFilpSignalPending
+
+   isFilpSignalPending (Private Method)
+
+DESCRIPTION:
+   Check Signal pending on filp task.
+
+PARAMETERS:
+   pFilpData          [ I ] - pointer to sQMIFilpStorage.
+RETURN VALUE:
+   true - singnal pending on filp task.
+   false - no singnal pending.
+===========================================================================*/
+bool isFilpSignalPending(sQMIFilpStorage *pFilpData)
+{
+   struct task_struct *pOpenTask = NULL;
+   struct task_struct *pReadTask = NULL;
+   struct task_struct *pWriteTask = NULL;
+   struct task_struct *pIOCTLTask = NULL;
+   if(pFilpData==NULL)
+   {
+      return false;
+   }
+   pOpenTask = pFilpData->pOpenTask;
+   pReadTask = pFilpData->pReadTask;
+   pWriteTask = pFilpData->pWriteTask;
+   pIOCTLTask = pFilpData->pIOCTLTask;
+   if(signal_pending(current))
+   {
+      DBG( "signal_pending current\n");
+      return true;
+   }
+   if(signal_pending(pOpenTask))
+   {
+      DBG( "signal_pending pOpenTask\n");
+      return true;
+   }
+   if(signal_pending(pReadTask))
+   {
+      DBG( "signal_pending pReadTask\n");
+      return true;
+   }
+   if(signal_pending(pWriteTask))
+   {
+      DBG( "signal_pending pWriteTask\n");
+      return true;
+   }
+   if(signal_pending(pIOCTLTask))
+   {
+      DBG( "signal_pending pIOCTLTask\n");
+      return true;
+   }
+
+   return false;
+}
+
+/*===========================================================================
+ReleaseFilpClientID
+
+   ReleaseFilpClientID (Private Method)
+
+DESCRIPTION:
+   Release Flip ClientID.
+
+PARAMETERS:
+   pFilpData          [ I ] - pointer to sQMIFilpStorage.
+RETURN VALUE:
+   none
+===========================================================================*/
+void ReleaseFilpClientID(sQMIFilpStorage * pFilpData)
+{
+   if (pFilpData->mClientID !=  0xffff)
+   {
+      pFilpData->iSemID = __LINE__;
+      if ( (pFilpData->iReadSyncResult>=0) &&
+        (pFilpData->mpDev->mbUnload < eStatUnloading) &&
+        !IsDeviceDisconnect(pFilpData->mpDev))
+      {
+         ReleaseClientID( pFilpData->mpDev,
+                     pFilpData->mClientID);
+         pFilpData->iSemID = -__LINE__;
+         pFilpData->mClientID =  0xffff;
+         mb();
+      }
+   }
+}
+
+/*===========================================================================
+assign_filp_pointer_to_null
+
+   assign_filp_pointer_to_null (Private Method)
+
+DESCRIPTION:
+   Assign the file to NULL in every process.
+
+PARAMETERS:
+   filp          [ I ] - pointer to file.
+RETURN VALUE:
+   none
+===========================================================================*/
+void assign_filp_pointer_to_null(struct file *filp)
+{
+   struct task_struct *pEachTask;
+   struct fdtable * pFDT;
+   struct file * pFilp;
+   int count = 0;
+   struct inode *inode = NULL;
+   if(filp==NULL)
+      return;
+   inode = file_inode(filp);
+   rcu_read_lock();
+   for_each_process( pEachTask )
+   {
+      if (pEachTask == NULL || pEachTask->files == NULL)
+      {
+         // Some tasks may not have files (e.g. Xsession)
+         continue;
+      }
+      spin_lock( &pEachTask->files->file_lock);
+      pFDT = files_fdtable( pEachTask->files );
+      for (count = 0; count < pFDT->max_fds; count++)
+      {
+         pFilp = pFDT->fd[count];
+         #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,19,0 ))
+         if (pFilp != NULL &&  pFilp->f_path.dentry != NULL)
+         #else
+         if (pFilp != NULL &&  pFilp->f_dentry != NULL)
+         #endif
+         {
+            #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,19,0 ))
+            if (pFilp->f_path.dentry->d_inode == inode)
+            #else
+            if (pFilp->f_dentry->d_inode == inode)
+            #endif
+            {
+               // Close this file handle
+               rcu_assign_pointer( pFDT->fd[count], NULL );
+            }
+         }
+      }
+      spin_unlock( &pEachTask->files->file_lock);
+   }
+   rcu_read_unlock();
+   return ;
+}
+

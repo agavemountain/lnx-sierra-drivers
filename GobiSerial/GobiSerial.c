@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2019-05-03/SWI_2.37"
+#define DRIVER_VERSION "2019-07-05/SWI_2.37"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -334,8 +334,6 @@ static struct usb_device_id GobiVIDPIDTable[] =
    {G3K_DEVICE(0x1199, 0x9015)},
    {G3K_DEVICE(0x1199, 0x9018)},
    {G3K_DEVICE(0x1199, 0x9019)},
-   {G3K_DEVICE(0x03F0, 0x361D)},
-   {G3K_DEVICE(0x03F0, 0x371D)},
 
    {MDM9X15_DEVICE(0x1199, 0x9040)},
    {MDM9X15_DEVICE(0x1199, 0x9041)},

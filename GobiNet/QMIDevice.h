@@ -142,6 +142,36 @@ POSSIBILITY OF SUCH DAMAGE.
 
 extern int qcqmi_table[MAX_QCQMI];
 extern int qmux_table[MAX_QCQMI];
+
+#define get_qcqmi_from_table() ({\
+   int ret = 0;\
+   for(ret=0;ret<MAX_QCQMI;ret++)\
+   {\
+       if (qcqmi_table[ret] == 0)\
+           break;\
+   }\
+   if (ret == MAX_QCQMI)\
+   {\
+       printk(KERN_ERR "no free entry available at qcqmi_table rray\n");\
+       ret=-ENOMEM;\
+   }else{\
+      DBG("get qcqmi_table:%d\n",ret);\
+      qcqmi_table[ret] = 1;\
+   }\
+   ret;\
+})
+
+#define release_qcqmi_from_table(i) ({\
+   if( (i<MAX_QCQMI) && \
+       (qcqmi_table[i] == 1) )\
+   {\
+      qcqmi_table[i] = 0;\
+      DBG("rel qcqmi_table:%d\n",i);\
+   }else{\
+      printk(KERN_ERR "Invalid entry:(%d) at qcqmi_table\n",i);\
+   }\
+})
+
 extern sGobiPrivateWorkQueues GobiPrivateWorkQueues[MAX_QCQMI][MAX_QCQMI_PER_INTF];
 //Register State
 enum {
@@ -424,7 +454,7 @@ void QMIWDSCallback(
    void *             pData );
 
 // Fire off reqests and start async read for QMI WDS callback
-int SetupQMIWDSCallback( sGobiUSBNet * pDev );
+int SetupQMIWDSCallback( sGobiUSBNet * pDev,u8 QMUXID);
 
 int SetupQMIQOSCallback( sGobiUSBNet * pDev );
 

@@ -550,6 +550,7 @@ typedef struct sGobiUSBNet
    struct device *qcqmidev;
    struct device *dev;
    u16 WDSClientID;
+   u16 QMUXWDSCientID[MAX_MUX_NUMBER_SUPPORTED];
    int iNetLinkStatus;
    int iDataMode;
    spinlock_t urb_lock;

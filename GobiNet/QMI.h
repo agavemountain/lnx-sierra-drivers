@@ -546,3 +546,10 @@ enum{
 
 void PrintIPV6Addr(ipv6_addr * addr);
 int iIsZeroIPv6Addr(ipv6_addr *pAddr);
+u16 QMIWDSSetQMuxIDReqSize( void );
+int QMIWDSSetQMuxIDReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u16      transactionID,
+   u8       MuxID);
+
