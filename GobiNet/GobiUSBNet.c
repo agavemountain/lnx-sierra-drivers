@@ -134,7 +134,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2019-07-05/SWI_2.58"
+#define DRIVER_VERSION "2019-09-13/SWI_2.59"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -635,22 +635,15 @@ int GobiNetSuspend(
    GobiSetDownReason( pGobiDev, DRIVER_SUSPENDED );  // disable interface asap
    #endif
 
-   #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
-   if (pDev->udev->auto_pm == 0)
-   #else
-   if ((powerEvent.event & PM_EVENT_AUTO) == 0)
-   #endif
-   {
-      DBG( "ConfigPowerSaveSettings\n" );
-      if(ConfigPowerSaveSettings(pGobiDev,QMIWDS,QMI_WDS_GET_PKT_SRVC_STATUS_IND)<0)
-         printk(KERN_ERR"Config Power Save Setting error 1\n");
-      if(ConfigPowerSaveSettings(pGobiDev,QMINAS,QMI_NAS_SERVING_SYSTEM_IND)<0)
-         printk(KERN_ERR"Config Power Save Setting error 2\n");
-      if(ConfigPowerSaveSettings(pGobiDev,QMIWMS,QMI_WMS_EVENT_REPORT_IND)<0)
-         printk(KERN_ERR"Config Power Save Setting error 3\n");
-      if(ConfigPowerSaveSettings(pGobiDev,QMIVOICE,QMI_VOICE_ALL_CALL_STATUS_IND)<0)
-         printk(KERN_ERR"Config Power Save Setting error 4\n");
-   }
+   DBG( "ConfigPowerSaveSettings\n" );
+   if(ConfigPowerSaveSettings(pGobiDev,QMIWDS,QMI_WDS_GET_PKT_SRVC_STATUS_IND)<0)
+      printk(KERN_ERR"Config Power Save Setting error 1\n");
+   if(ConfigPowerSaveSettings(pGobiDev,QMINAS,QMI_NAS_SERVING_SYSTEM_IND)<0)
+      printk(KERN_ERR"Config Power Save Setting error 2\n");
+   if(ConfigPowerSaveSettings(pGobiDev,QMIWMS,QMI_WMS_EVENT_REPORT_IND)<0)
+      printk(KERN_ERR"Config Power Save Setting error 3\n");
+   if(ConfigPowerSaveSettings(pGobiDev,QMIVOICE,QMI_VOICE_ALL_CALL_STATUS_IND)<0)
+      printk(KERN_ERR"Config Power Save Setting error 4\n");
 
    if(SetPowerSaveMode(pGobiDev,1)<0)
    {
@@ -1181,6 +1174,22 @@ struct sk_buff *GobiNetDriverTxFixup(
       UsbAutopmPutInterface( pGobiDev->mpIntf );
    }
    #else
+   #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
+   if (pDev->udev->auto_pm == 0)   
+   #else      
+   if ((pGobiDev->mpIntf->dev.power.power_state.event & PM_EVENT_AUTO) == 0)   
+   #endif
+   {
+      DBG("Suspended\n");
+      UsbAutopmGetInterface( pGobiDev->mpIntf );
+      UsbAutopmPutInterface( pGobiDev->mpIntf );
+   }
+   else
+   {
+      DBG("Auto Suspended\n");
+      gobi_usb_autopm_get_interface_async( pGobiDev->mpIntf );
+      gobi_usb_autopm_put_interface_async( pGobiDev->mpIntf );
+   }
    if(0==GetTxRxStat(pGobiDev,RESUME_TX_OKAY))
    {
       DBG("Suspended Tx Drop\n");
@@ -2691,9 +2700,7 @@ static const struct usb_device_id GobiVIDPIDTable [] =
    
    //AR758x
    {QMI_9X15_DEVICE(0x1199, 0x9102)},
-   
-   //AR758x
-   {QMI_9X15_DEVICE(0x1199, 0x9110)},
+
    //Terminating entry
    { }
 };

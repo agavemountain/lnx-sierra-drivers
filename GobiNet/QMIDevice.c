@@ -1,3 +1,4 @@
+
 /*===========================================================================
 FILE:
    QMIDevice.c
@@ -334,6 +335,13 @@ const int i = 1;
                            : CDC_CONNSPD_MASK_LE; \
 }
 
+#define gobi_usb_unlink_urb(urb)({\
+   if (!(urb && urb->dev && urb->ep))\
+      return;\
+   atomic_inc(&urb->reject);\
+   usb_unlink_urb(urb);\
+})
+
 #define SPIN_LOCK_DEBUG 0
 
 /*=========================================================================*/
@@ -635,7 +643,14 @@ static struct usb_endpoint_descriptor *GetEndpoint(
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 3,9,0 ))
 static inline struct inode *file_inode(const struct file *f)
 {
-   return f->f_path.dentry->d_inode;
+   if(f)
+   {
+      if(f->f_path.dentry)
+      {
+         return f->f_path.dentry->d_inode;
+      }
+   }
+   return NULL;
 }
 #endif
 
@@ -658,7 +673,6 @@ int gobi_filp_close(struct file *filp, fl_owner_t id)
 
    if (filp->f_op->flush)
       retval = filp->f_op->flush(filp, id);
-   make_bad_inode(inode);
    fput(filp);
    assign_filp_pointer_to_null(filp);
    return retval;
@@ -1760,6 +1774,18 @@ void KillRead( sGobiUSBNet * pDev )
    mb();
    #endif
    local_irq_disable();
+   if (pDev->mQMIDev.mpReadURB != NULL)
+   {
+      DBG( "unlink read URB\n" );
+      gobi_usb_unlink_urb( pDev->mQMIDev.mpReadURB );
+   }
+
+   if (pDev->mQMIDev.mpIntURB != NULL)
+   {
+      DBG( "unlink int URB\n" );
+      gobi_usb_unlink_urb( pDev->mQMIDev.mpIntURB );
+   }
+   local_irq_enable();
    GobiCancelReadCallBackWorkQueue(pDev);
    // Stop reading
    if (pDev->mQMIDev.mpReadURB != NULL)
@@ -1773,8 +1799,6 @@ void KillRead( sGobiUSBNet * pDev )
       DBG( "Killng int URB\n" );
       usb_kill_urb( pDev->mQMIDev.mpIntURB );
    }
-
-   local_irq_enable();
 
    // Release buffers
    kfree( pDev->mQMIDev.mpReadSetupPacket );
@@ -2481,7 +2505,11 @@ int WriteSync(
        else if(result < 0 )
        {
           DBG( "%s no device!\n" ,__FUNCTION__);
-           return result;
+          if(!signal_pending(current))
+          {
+            pDev->iUSBState = USB_STATE_NOTATTACHED;
+          }
+          return result;
        }
        else
        {
@@ -3493,7 +3521,7 @@ long UserspaceunlockedIOCTL(
    }
    if(IsDeviceDisconnect(pFilpData->mpDev))
    {
-      DBG( "Device Disconnected!\n" );
+      DBG( "Device Disconnected CID:0x%04x!\n", pFilpData->mClientID);
       return -ENXIO;
    }
    if(pFilpData->mpDev->mbUnload)
@@ -4174,39 +4202,43 @@ int UserspaceClose(
    if (refcnt > 1)
    {
       pFilpData = (sQMIFilpStorage *)pFilp->private_data;
-      if(current->exit_signal!=SIGCHLD)
+      if(!IsDeviceDisconnect(pFilpData->mpDev) &&
+         (current->exit_signal>0))
       {
-          if((IsOtherTaskUsingFilp(pFilp) ==1)&&
-                (IsOpenTaskIsCurrent(pFilp)||
-                 IsCurrentTaskExit()))
-          {
-             DBG( "f_count %ld - ignoring close\n", refcnt);
-             return -EBUSY;
-          }
-      }
-      else
-      {
-         DBG( "SIGCHLD %ld \n", refcnt);
-         if(!IsOpenTaskIsCurrent(pFilp))
+         if(current->exit_signal!=SIGCHLD)
          {
-            DBG( "f_count %ld - ignoring close\n", refcnt);
-            if(signal_group_exit(current->signal))
+             DBG( "!SIGCHLD %ld CID:%04X exit_signal:%d\n", refcnt,pFilpData->mClientID,current->exit_signal);
+             if((IsOtherTaskUsingFilp(pFilp) ==1)&&
+                   (IsOpenTaskIsCurrent(pFilp)||
+                    IsCurrentTaskExit()))
+             {
+                DBG( "f_count %ld - ignoring close\n", refcnt);
+                return -EBUSY;
+             }
+         }
+         else
+         {
+            DBG( "SIGCHLD %ld \n", refcnt);
+            if(!IsOpenTaskIsCurrent(pFilp))
+            {
+               DBG( "f_count %ld - ignoring close\n", refcnt);
+               if(signal_group_exit(current->signal))
+               {
+                  ReleaseFilpClientID(pFilpData);
+               }
+               return -EBUSY;
+            }
+         }
+         DBG("f_count %ld - close %d %d\n", refcnt,IsOtherTaskUsingFilp(pFilp),IsOpenTaskIsCurrent(pFilp));
+         if (isFilpSignalPending(pFilpData)==false)
+         {
+            DBG( "!SignalPending - ignoring close\n");
+            if(IsOpenTaskIsCurrent(pFilp))
             {
                ReleaseFilpClientID(pFilpData);
             }
             return -EBUSY;
          }
-      }
-      DBG("f_count %ld - close %d %d\n", refcnt,IsOtherTaskUsingFilp(pFilp),IsOpenTaskIsCurrent(pFilp));
-      if ( (isFilpSignalPending(pFilpData)==false) &&
-            !IsDeviceDisconnect(pFilpData->mpDev) )
-      {
-         DBG( "!SignalPending - ignoring close\n");
-         if(IsOpenTaskIsCurrent(pFilp))
-         {
-            ReleaseFilpClientID(pFilpData);
-         }
-         return -EBUSY;
       }
    }
    pFilpData = (sQMIFilpStorage *)pFilp->private_data;
@@ -4528,7 +4560,7 @@ ssize_t UserspaceRead(
    }
    if(IsDeviceDisconnect(pFilpData->mpDev))
    {
-      DBG( "Device Disconnected!\n" );
+      DBG( "Device Disconnected CID:0x%04x!\n", pFilpData->mClientID);
       return -ENXIO;
    }
    if(pFilpData->mpDev->mbUnload)
@@ -4611,7 +4643,7 @@ ssize_t UserspaceRead(
    }
    if(IsDeviceDisconnect(pFilpData->mpDev))
    {
-      DBG( "Device Disconnected!\n" );
+      DBG( "Device Disconnected CID:0x%04x!\n", pFilpData->mClientID);
       return -ENXIO;
    }
    if((pFilpData->mpDev->mbUnload)||(pFilpData->iIsClosing))
@@ -4705,7 +4737,7 @@ ssize_t UserspaceWrite(
    }
    if(IsDeviceDisconnect(pFilpData->mpDev))
    {
-      DBG( "Device Disconnected!\n" );
+      DBG( "Device Disconnected CID:0x%04x!\n", pFilpData->mClientID);
       return -ENXIO;
    }
    if(pFilpData->mpDev->mbUnload)
@@ -4760,7 +4792,7 @@ ssize_t UserspaceWrite(
    if(pFilpData!=NULL)
    if(IsDeviceDisconnect(pFilpData->mpDev))
    {
-      DBG( "Device Disconnected!\n" );
+      DBG( "Device Disconnected CID:0x%04x!\n", pFilpData->mClientID);
       return -ENXIO;
    }
    // On success, return requested size, not full QMI reqest size
@@ -8107,6 +8139,10 @@ int WriteSyncNoResume(
        else if(result < 0 )
        {
           DBG( "%s no device!\n" ,__FUNCTION__);
+          if(!signal_pending(current))
+          {
+            pDev->iUSBState = USB_STATE_NOTATTACHED;
+          }
            return result;
        }
        else
@@ -8430,6 +8466,10 @@ int WriteSyncNoRetry(
    else if(result < 0 )
    {
       DBG( "%s no device!\n" ,__FUNCTION__);
+      if(!signal_pending(current))
+      {
+         pDev->iUSBState = USB_STATE_NOTATTACHED;
+      }
       gobi_usb_autopm_put_interface( pDev->mpIntf );
        return result;
    }
