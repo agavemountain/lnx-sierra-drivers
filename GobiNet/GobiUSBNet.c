@@ -128,20 +128,13 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 #endif
 
 #define BIT_9X15    (31)
-//-----------------------------------------------------------------------------
-// Probe one device at the time when set to "1"
-//-----------------------------------------------------------------------------
-#ifdef CONFIG_ANDROID
-#define _PROBE_LOCK_ 1
-#else
-#define _PROBE_LOCK_ 1
-#endif
+
 //-----------------------------------------------------------------------------
 // Definitions
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2019-05-03/SWI_2.57"
+#define DRIVER_VERSION "2019-07-05/SWI_2.58"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -262,6 +255,7 @@ int gobi_rtnl_trylock(void);
 void stop_virtual_netdev(struct net_device *dev);
 int iIsRemoteWakeupSupport(struct usbnet * pDev);
 bool isSpinLockCheckSupport(void);
+
 
 #ifdef CONFIG_ANDROID
 int GobiNetResetResume( struct usb_interface * pIntf );
@@ -388,7 +382,6 @@ int work_function(void *data)
    char szQMIBusName[64]={0};
    struct usb_device *dev = NULL;
    
-   #if _PROBE_LOCK_
    int i = 0;
    if(!pGobiDev)
    {
@@ -430,7 +423,7 @@ int work_function(void *data)
       }
    }
    set_current_state(TASK_RUNNING);
-   #endif
+
    if(!pGobiDev)
    {
       return -1;
@@ -501,9 +494,9 @@ int work_function(void *data)
       gobiUnLockSystemSleep(pGobiDev);
       #endif
    }
-   #if _PROBE_LOCK_
+
    up(&taskLoading);
-   #endif
+
    if (status != 0)
    {
       // usbnet_disconnect() will call GobiNetDriverUnbind() which will call
@@ -885,10 +878,8 @@ int GobiNetResetResume( struct usb_interface * pIntf )
    printk(KERN_INFO"reset resume suspend\n");
    if(pIntf->cur_altsetting->desc.bInterfaceNumber ==8)
    {
-      struct usb_device *udev;
       printk(KERN_INFO"Reset Device\n");
-      udev = interface_to_usbdev(pIntf);
-      usb_reset_device(udev);
+      usb_queue_reset_device(pIntf);
    }
    return 0;
 }
@@ -2676,7 +2667,6 @@ static const struct usb_device_id GobiVIDPIDTable [] =
    {QMI_G3K_DEVICE(0x1199, 0x9013)},
    {QMI_G3K_DEVICE(0x1199, 0x9015)},
    {QMI_G3K_DEVICE(0x1199, 0x9019)},
-   {QMI_G3K_DEVICE(0x03f0, 0x371d)},
    // 9x15
    {QMI_9X15_DEVICE(0x1199, 0x9071)}, /* consider 9x30 and 9x50 same as 9x15 at the moment, change it later if needed */
    {QMI_9X15_DEVICE(0x1199, 0x68C0)},
@@ -2823,6 +2813,7 @@ int GobiUSBNetProbe(
    sGobiUSBNet * pGobiDev;
    struct ethhdr *eth;
    int iNumberOfMUXIDSupported=0;
+   int i = 0;
 
 #if 0
    /* There exists a race condition in the firmware that sometimes results
@@ -2931,6 +2922,10 @@ int GobiUSBNetProbe(
    pGobiDev->mpNetDev = pDev;
    pGobiDev->iIsUSBReset = false;
    atomic_set(&pGobiDev->aClientMemIsLock,CLIENT_MEMORY_UNLOCK);
+   for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
+   {
+      pGobiDev->QMUXWDSCientID[i] = (u16)-1;
+   }
 
    // Clearing endpoint halt is a magic handshake that brings 
    // the device out of low power (airplane) mode
@@ -3117,6 +3112,7 @@ int GobiUSBNetProbe(
    pGobiDev->mIs9x15= is9x15;
    pGobiDev->mUsb_Interface = pIntf;
    pGobiDev->iTaskID = 0;
+   pGobiDev->mQMIDev.qcqmi = get_qcqmi_from_table();
    if(pGobiDev->iTaskID>=0)
    {      
       GobiInitWorkQueue(pGobiDev);
@@ -3292,10 +3288,10 @@ static int __init GobiUSBNetModInit( void )
          memset(&GobiPrivateWorkQueues[i][j],0,sizeof(sGobiPrivateWorkQueues));
       }
    }
-   #if _PROBE_LOCK_
+
    sema_init( &taskLoading, SEMI_INIT_DEFAULT_VALUE );
    up(&taskLoading);
-   #endif
+
    if(iIsSpinIsLockedSupported==false)
    {
       DBG("spin_is_locked is not supported\n");
@@ -3490,8 +3486,6 @@ int gobi_dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
    }
    else
    {
-      dev->stats.rx_packets++;
-      dev->stats.rx_bytes+= skb->len;
       DBG( "NET_RX_SUCCESS\n" );
       dev->stats.rx_packets++;
       dev->stats.rx_bytes+= skb->len;
@@ -3590,7 +3584,7 @@ int GobiUSBLockReset( struct usb_interface * pIntf )
    }
    printk(KERN_INFO "Reset Device\n");
    udev = interface_to_usbdev(pIntf);
-   usb_reset_device(udev);
+   usb_queue_reset_device(pIntf);
    usb_unlock_device(udev);
    return 0;
 }

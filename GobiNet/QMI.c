@@ -2230,3 +2230,61 @@ void PrintIPV6Addr(ipv6_addr * addr)
    }
 }
 
+/*===========================================================================
+METHOD:
+   QMIWDSSetQMuxIDReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMIWDSSetQMuxIDReq
+
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16 QMIWDSSetQMuxIDReqSize( void )
+{
+   return sizeof( sQMUX ) + 11;
+}
+
+/*===========================================================================
+METHOD:
+   QMIWDSSetQMuxIDReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI WDS Set QMUX ID Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMIWDSSetQMuxIDReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u16      transactionID ,
+   u8       MuxID)
+{
+   if (pBuffer == 0 || buffSize < QMIWDSSetQMuxIDReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   // QMI WDS SET QMUX ID REQ
+   // Request
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0;
+   // Transaction ID
+   *(u16 *)(pBuffer + sizeof( sQMUX ) + 1) = cpu_to_le16(transactionID);
+   // Message ID
+   *(u16 *)(pBuffer + sizeof( sQMUX ) + 3) = cpu_to_le16(0xA2);
+   // Size of TLV's
+   *(u16 *)(pBuffer + sizeof( sQMUX ) + 5) = cpu_to_le16(4);
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 7)  = 0x11;
+   *(u16 *)(pBuffer + sizeof( sQMUX ) + 8) = cpu_to_le16(1);
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 10)  = MuxID;
+   // success
+   return sizeof( sQMUX ) + 11;
+}
+
