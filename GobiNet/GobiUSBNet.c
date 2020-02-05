@@ -134,7 +134,7 @@ static inline __u8 ipv6_tclass2(const struct ipv6hdr *iph)
 //-----------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2019-09-13/SWI_2.59"
+#define DRIVER_VERSION "2019-11-22/SWI_2.60"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiNet"
 #define QOS_HDR_LEN (6)
@@ -644,6 +644,8 @@ int GobiNetSuspend(
       printk(KERN_ERR"Config Power Save Setting error 3\n");
    if(ConfigPowerSaveSettings(pGobiDev,QMIVOICE,QMI_VOICE_ALL_CALL_STATUS_IND)<0)
       printk(KERN_ERR"Config Power Save Setting error 4\n");
+   if(ConfigPowerSaveSettings(pGobiDev,QMIUIM,QMI_UIM_SIM_STATUS_CHANGED_IND)<0)
+      printk(KERN_ERR"Config Power Save Setting error 5\n");
 
    if(SetPowerSaveMode(pGobiDev,1)<0)
    {
@@ -796,7 +798,6 @@ int GobiNetResume( struct usb_interface * pIntf )
    #ifndef CONFIG_ANDROID
    SendWakeupControlMsg(pIntf,oldPowerState);
    #else
-   msleep(300);
    SendWakeupControlMsg(pIntf,oldPowerState);
    GobiClearDownReason( pGobiDev, DRIVER_SUSPENDED );
    SetCurrentSuspendStat(pGobiDev,0);
@@ -1051,6 +1052,12 @@ static int GobiNetDriverBind(
         pIn->desc.bEndpointAddress,
         pOut->desc.bEndpointAddress );
 
+   usb_reset_endpoint(pDev->udev,pIn->desc.bEndpointAddress);
+   usb_reset_endpoint(pDev->udev,pOut->desc.bEndpointAddress);
+
+   usb_clear_halt(pDev->udev, pDev->in);
+   usb_clear_halt(pDev->udev, pDev->out);
+
    // In later versions of the kernel, usbnet helps with this
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,23 ))
    pIntf->dev.platform_data = (void *)pDev;
@@ -1061,6 +1068,9 @@ static int GobiNetDriverBind(
        pDev->net->dev_addr[0] |= 0x02;   /* set local assignment bit */
        pDev->net->dev_addr[0] &= 0xbf;   /* clear "IP" bit */
    }
+
+   /* change MAC addr to include, ifacenum, and to be unique */
+   pDev->net->dev_addr[ETH_ALEN-1] = pIntf->cur_altsetting->desc.bInterfaceNumber;
 
    return 0;
 }
@@ -1174,19 +1184,9 @@ struct sk_buff *GobiNetDriverTxFixup(
       UsbAutopmPutInterface( pGobiDev->mpIntf );
    }
    #else
-   #if (LINUX_VERSION_CODE < KERNEL_VERSION( 2,6,33 ))
-   if (pDev->udev->auto_pm == 0)   
-   #else      
-   if ((pGobiDev->mpIntf->dev.power.power_state.event & PM_EVENT_AUTO) == 0)   
-   #endif
+
+   if(bIsSuspend(pGobiDev))
    {
-      DBG("Suspended\n");
-      UsbAutopmGetInterface( pGobiDev->mpIntf );
-      UsbAutopmPutInterface( pGobiDev->mpIntf );
-   }
-   else
-   {
-      DBG("Auto Suspended\n");
       gobi_usb_autopm_get_interface_async( pGobiDev->mpIntf );
       gobi_usb_autopm_put_interface_async( pGobiDev->mpIntf );
    }
@@ -2485,6 +2485,14 @@ static int GobiNetDriverLteRxFixup(struct usbnet *dev, struct sk_buff *skb)
       UsbAutopmPutInterface( pGobiDev->mpIntf );
    }
    #else
+
+   //auto suspend wakeup
+   if(bIsSuspend(pGobiDev)  &&
+      (GetTxRxStat(pGobiDev,RESUME_RX_OKAY)==0))
+   {
+      gobi_usb_autopm_get_interface_async( pGobiDev->mpIntf );
+      gobi_usb_autopm_put_interface_async( pGobiDev->mpIntf );
+   }
    if(GetTxRxStat(pGobiDev,RESUME_RX_OKAY)==0)
    {
       DBG("Suspended Rx Drop\n");
@@ -3007,9 +3015,6 @@ int GobiUSBNetProbe(
 
    pGobiDev->mpIntf = pIntf;
    memset( &(pGobiDev->mMEID), '0', MAX_DEVICE_MEID_SIZE );
-
-   /* change MAC addr to include, ifacenum, and to be unique */
-   pGobiDev->mpNetDev->net->dev_addr[ETH_ALEN-1] = ifacenum;
 
    DBG( "Mac Address:\n" );
    PrintHex( &pGobiDev->mpNetDev->net->dev_addr[0], 6 );
