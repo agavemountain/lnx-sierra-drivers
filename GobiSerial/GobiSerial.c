@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2019-07-05/SWI_2.37"
+#define DRIVER_VERSION "2019-09-13/SWI_2.38"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -213,6 +213,13 @@ int GobiSerialResume( struct usb_interface * pIntf );
 #endif
 void stop_read_write_urbs(struct usb_serial *serial);
 
+void gobi_set_throttled(struct usb_serial_port *port);
+void gobi_clear_throttled(struct usb_serial_port *port);
+
+void gobi_throttle(struct tty_struct *tty);
+void gobi_unthrottle(struct tty_struct *tty);
+
+
 
 #define MDM9X15_DEVICE(vend, prod) \
 	USB_DEVICE(vend, prod), \
@@ -293,13 +300,6 @@ static struct usb_device_id GobiVIDPIDTable[] =
       .driver_info = BIT(1) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
    
-   /* Sierra Wireless QMI AR759x */
-   { USB_DEVICE(0x1199, 0x9110),
-      /* blacklist the interface */
-      /* whitelist interfaces 5 & 6 for raw data and open sim resp. */
-      .driver_info = BIT(1) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
-   },
-   
    /* Sierra Wireless QMI MC75xx/EM75xx BOOT*/
    { USB_DEVICE(0x1199, 0x9090),
       /* blacklist the interface */
@@ -363,6 +363,8 @@ struct sierra_port_private {
    int iGPSStartState;
    unsigned long ulExpires;
    int iUsb3ZlpEnable;
+#define PORT_THROTTLED 0
+   unsigned long flags;
 };
 
 int gobi_usb_serial_generic_resume(struct usb_interface *intf)
@@ -745,6 +747,8 @@ static struct usb_serial_driver gGobiDevice =
     .reset_resume = GobiUSBSerialResetResume,
     #endif
  #endif
+    .throttle           = gobi_throttle,
+    .unthrottle         = gobi_unthrottle,
 };
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,4,0 ))
@@ -933,7 +937,6 @@ bool IsGPSPort(struct usb_serial_port *   pPort )
       case 0x90b1:
       case 0x9100:
       case 0x9102:
-      case 0x9110:
          if (pPort->serial->interface->cur_altsetting->desc.bInterfaceNumber == 2)
             return true;
          break;
@@ -1005,7 +1008,8 @@ int GobiOpen(
       DBG( "invalid parameter\n" );
       return -EINVAL;
    }
-
+   gobi_clear_throttled(pPort);
+   
    // Is this the GPS port?
    if ((IsGPSPort(pPort)) == true)
    {
@@ -1379,8 +1383,8 @@ void GobiReadBulkCallback(struct urb *urb)
 
     /* Throttle the device if requested by tty */
     spin_lock_irqsave(&port->lock, flags);
-    port->throttled = port->throttle_req;
-    if (!port->throttled)
+
+    if (!test_bit(PORT_THROTTLED, &portdata->flags))
     {
         spin_unlock_irqrestore(&port->lock, flags);
         #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,3,0 ))
@@ -1784,6 +1788,59 @@ int gobi_usb_bulk_msg(struct usb_device *usb_dev, unsigned int pipe,
       pBuf = NULL;
    }
    return ret;
+}
+
+void gobi_set_throttled(struct usb_serial_port *port)
+{
+   struct sierra_port_private *portdata;
+   unsigned long flags;
+   if(port)
+   {
+      portdata = usb_get_serial_port_data(port);
+      if(portdata)
+      {
+         spin_lock_irqsave(&port->lock, flags);
+         set_bit(PORT_THROTTLED, &portdata->flags);
+         spin_unlock_irqrestore(&port->lock, flags);
+      }
+   }
+   return ;
+}
+
+void gobi_clear_throttled(struct usb_serial_port *port)
+{
+   struct sierra_port_private *portdata;
+   unsigned long flags;
+   if(port)
+   {
+      portdata = usb_get_serial_port_data(port);
+      if(portdata)
+      {
+         spin_lock_irqsave(&port->lock, flags);
+         clear_bit(PORT_THROTTLED, &portdata->flags);
+         spin_unlock_irqrestore(&port->lock, flags);
+      }
+   }
+   return ;
+}
+
+void gobi_throttle(struct tty_struct *tty)
+{
+   struct usb_serial_port *port = tty->driver_data;
+   gobi_set_throttled(port);
+}
+
+void gobi_unthrottle(struct tty_struct *tty)
+{
+   struct usb_serial_port *port = tty->driver_data;
+   int result = 0;
+   gobi_clear_throttled(port);
+   /* Submit the urb to read from the port. */
+   result = usb_submit_urb(port->interrupt_in_urb, GFP_ATOMIC);
+  if (result < 0)
+   {
+      DBG( "error %d\n", result );
+   }
 }
 
 // Calling kernel module to init our driver
