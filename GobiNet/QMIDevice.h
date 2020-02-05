@@ -127,6 +127,9 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 #include "Structs.h"
 #include "QMI.h"
+#ifdef CONFIG_ANDROID
+#include <linux/suspend.h>
+#endif
 
 #define MAX_QCQMI 255
 #define MAX_QCQMI_PER_INTF 2
@@ -548,3 +551,20 @@ void GobiDestoryWorkQueue(sGobiUSBNet *pGobiDev);
 // Clean up work queues in sGobiPrivateWorkQueues
 int iClearWorkQueuesByTableIndex(int index);
 
+#ifdef CONFIG_ANDROID
+#define  DELAY_MS_DEFAULT  round_jiffies_relative(30*HZ)
+//
+void SetTxRxStat(sGobiUSBNet *pGobiDev,int state);
+//
+int GetTxRxStat(sGobiUSBNet *pGobiDev,int Channel);
+//
+void gobiLockSystemSleep(sGobiUSBNet *pGobiDev);
+//
+void gobiUnLockSystemSleep(sGobiUSBNet *pGobiDev);
+//
+void gobiStayAwake(sGobiUSBNet *pGobiDev);
+//
+void gobiPmRelax(sGobiUSBNet *pGobiDev);
+//
+int GenerateProcessName(const char *pPrefix,char *szProcessName,unsigned sizeofName,sGobiUSBNet *pGobiDev );
+#endif

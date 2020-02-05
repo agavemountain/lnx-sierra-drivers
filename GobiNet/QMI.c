@@ -1382,7 +1382,7 @@ int QMIWDSEventResp(
    bool *   pbReconfigure )
 {
    int result;
-   u8 pktStatusRead[2];
+   u8 pktStatusRead[2] = {0};
 
    // Ignore QMUX and SDU
    u8 offset = sizeof( sQMUX ) + 3;

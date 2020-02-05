@@ -1,6 +1,5 @@
 obj-m := GobiNet.o
-GobiNet-objs := GobiUSBNet.o QMIDevice.o QMI.o usbnet_2_6_32.o usbnet_3_0_6.o \
-	            usbnet_2_6_35.o usbnet_3_10_21.o usbnet_3_12_xx.o usbnet_4_4_xx.o
+GobiNet-objs := GobiUSBNet.o QMIDevice.o QMI.o
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 OUTPUTDIR=/lib/modules/`uname -r`/kernel/drivers/net/usb/
@@ -17,6 +16,8 @@ TX_URB_MONITOR:=0
 endif
 ifeq ($(TX_URB_MONITOR), 1)
 	ccflags-y:=-DTX_URB_MONITOR
+	GobiNet-objs += usbnet_3_0_6.o \
+	            usbnet_2_6_35.o usbnet_3_10_21.o usbnet_3_12_xx.o usbnet_4_4_xx.o
 endif
 
 RAWIP := 0
@@ -39,6 +40,9 @@ M64_CCPREFIX := ~/toolchain/arm64bit/be/aarch64ebv8-marvell-linux-gnu-5.2.1_x86_
 PPC_KDIR := ~/toolchain/ppc/kernel_ppc
 PPC_CCPREFIX :=~/toolchain/ppc/fsl/1.1/sysroots/i686-fslsdk-linux/usr/bin/ppc64e5500-fsl-linux/powerpc64-fsl-linux-
 
+HIKEY9_KDIR := /farm/android/Hikey_9.0_Trunk/kernel/hikey-linaro
+HIKEY9_CCPREFIX := /farm/android/Hikey_9.0_Trunk/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+
 all:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
@@ -56,6 +60,9 @@ pi:
 
 ow: 
 	$(MAKE) ARCH=mips CROSS_COMPILE=${OW_CCPREFIX} -C $(OW_KDIR) M=$(PWD) modules
+
+hikey9:
+	$(MAKE) ARCH=arm64 CROSS_COMPILE=${HIKEY9_CCPREFIX} -C $(HIKEY9_KDIR) M=$(PWD) modules
 
 install: all
 	mkdir -p $(OUTPUTDIR)

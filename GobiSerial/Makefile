@@ -18,6 +18,9 @@ M64_CCPREFIX := ~/toolchain/arm64bit/be/aarch64ebv8-marvell-linux-gnu-5.2.1_x86_
 PPC_KDIR := ~/toolchain/ppc/kernel_ppc
 PPC_CCPREFIX :=~/toolchain/ppc/fsl/1.1/sysroots/i686-fslsdk-linux/usr/bin/ppc64e5500-fsl-linux/powerpc64-fsl-linux-
 
+HIKEY9_KDIR := /farm/android/Hikey_9.0_Trunk/kernel/hikey-linaro
+HIKEY9_CCPREFIX := /farm/android/Hikey_9.0_Trunk/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+
 all: clean
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
@@ -35,6 +38,9 @@ m64:
 
 ppc:
 	$(MAKE) ARCH=powerpc CROSS_COMPILE=${PPC_CCPREFIX} -C $(PPC_KDIR) M=$(PWD) modules
+
+hikey9:
+	$(MAKE) ARCH=arm64 CROSS_COMPILE=${HIKEY9_CCPREFIX} -C $(HIKEY9_KDIR) M=$(PWD) modules
 
 install: all
 	mkdir -p $(OUTPUTDIR)

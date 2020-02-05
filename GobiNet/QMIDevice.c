@@ -213,6 +213,11 @@ struct workqueue_struct *GetPrivateWorkQueuesWQByTableIndex(int i,int j,int type
 int ClearPrivateWorkQueuesProcessByTableIndex(int i,int j);
 void GobiCancelReadCallBackWorkQueue(sGobiUSBNet *pGobiDev);
 void GobiCancelProbeWorkQueue(sGobiUSBNet *pGobiDev);
+#ifdef CONFIG_ANDROID
+void GobiCancelLockSystemSleepWorkQueue(sGobiUSBNet *pGobiDev);
+void GobiCancelUnLockSystemSleepWorkQueue(sGobiUSBNet *pGobiDev);
+#endif
+
 bool TransceiveReleaseClientID(
    sGobiUSBNet *    pDev,
    u16                clientID);
@@ -220,6 +225,12 @@ void GobiCancelDelayWorkWorkQueue(
    sGobiUSBNet *pGobiDev,
    struct workqueue_struct *wq, 
    struct delayed_work *dw);
+#ifdef CONFIG_ANDROID
+void GobiCancelDelayWorkWorkQueueWithoutUSBLockDevice(
+   sGobiUSBNet *pGobiDev,
+   struct workqueue_struct *wq, 
+   struct delayed_work *dw);
+#endif
 
 #define CLIENT_READMEM_SNAPSHOT(clientID, pdev)\
    if( (debug & DEBUG_QMI) && clientmemdebug )\
@@ -344,6 +355,12 @@ const int i = 1;
 #define in_serving_softirq()	(softirq_count() & SOFTIRQ_OFFSET)
 #endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,0,0 ))
+   #define gobi_dev_change_flags(dev,flags) dev_change_flags(dev, flags, NULL)
+#else
+   #define gobi_dev_change_flags(dev,flags) dev_change_flags(dev, flags)
+#endif
+
 static int gobi_qmimux_open(struct net_device *dev)
 {
    struct gobi_qmimux_priv *priv = netdev_priv(dev);
@@ -353,8 +370,9 @@ static int gobi_qmimux_open(struct net_device *dev)
    if (!(priv->real_dev->flags & (IFF_UP|IFF_RUNNING)))
    {
       printk("Adaptor Not Up\n");
-      oflags = dev->flags;
-      if (dev_change_flags(real_dev, oflags | IFF_UP | IFF_RUNNING) < 0) {
+      oflags = dev->flags;      
+      if (gobi_dev_change_flags(real_dev, oflags | IFF_UP | IFF_RUNNING) < 0)
+      {
           printk("IP-Config: Failed to open %s\n",
           dev->name);
       }
@@ -452,6 +470,45 @@ static const struct net_device_ops gobi_qmimux_netdev_ops = {
 };
 
 /*=========================================================================*/
+#ifdef CONFIG_ANDROID
+#define GOBI_MIN_AUTO_SUSPEND_DELAY 1000
+#define GOBI_MAX_AUTO_SUSPEND_DELAY 10000
+void BackupAutoSuspend_Delay(sGobiUSBNet *pDev)
+{
+    struct device *dev = &pDev->mpNetDev->udev->dev;
+    if(pDev->autosuspend_overrided == false)
+    {
+        if(dev->power.runtime_auto == true)
+        {
+            //backup delay set by kernel (default is 2 seconds)
+            pDev->autosuspend_delay = dev->power.autosuspend_delay;
+            DBG("autosuspend = %zu \n", pDev->autosuspend_delay);
+            //allow more auto suspend delay for QMI msg req/resp
+            pm_runtime_set_autosuspend_delay(dev,GOBI_MAX_AUTO_SUSPEND_DELAY);    
+            pDev->autosuspend_overrided = true;
+        }
+    }
+}
+void RestoreAutoSuspend_Delay(sGobiUSBNet *pDev)
+{
+    struct device *dev = &pDev->mpNetDev->udev->dev;
+    if(pDev->autosuspend_overrided == true)
+    {    
+        if(dev->power.runtime_auto == true)
+        {
+            DBG("autosuspend delay restore from %d to %zu \n",dev->power.autosuspend_delay, pDev->autosuspend_delay);
+            //small delay may cause issue
+            if(pDev->autosuspend_delay<GOBI_MIN_AUTO_SUSPEND_DELAY) pDev->autosuspend_delay=GOBI_MIN_AUTO_SUSPEND_DELAY;
+            //restore delay set by kernel
+            pm_runtime_set_autosuspend_delay(dev,pDev->autosuspend_delay);
+            pDev->autosuspend_overrided = false;
+        }
+    }
+}
+#define SET_CONTROL_LINE_STATE_REQUEST             0x22
+#define CONTROL_DTR                     0x01
+#define CONTROL_RTS                     0x02
+#endif
 
 
 /*=========================================================================*/
@@ -846,7 +903,18 @@ void GobiSetDownReason(
    {
       pDev->iNetLinkStatus = eNetDeviceLink_Disconnected;
    }
+   #ifdef CONFIG_ANDROID
+   if (DRIVER_SUSPENDED != reason)
+   {
+      //Android 6.0 dhcpcd detect device down/up during host suspend/resume
+      //causes dhcpcd delete/add route after resume, but it's not working and cause issue ANDROIDRIL-310
+      //workaround : do not make device off during suspend
+      //usbnet.c->usbnet_bh() also need to modify to incorporate this change 
+      netif_carrier_off( pDev->mpNetDev->net );
+   }
+   #else
    netif_carrier_off( pDev->mpNetDev->net );
+   #endif
 }
 
 /*===========================================================================
@@ -1682,7 +1750,9 @@ void KillRead( sGobiUSBNet * pDev )
       DBG( "pDev NULL\n" );
       return ;
    }
+   #ifndef CONFIG_ANDROID
    mb();
+   #endif
    local_irq_disable();
    GobiCancelReadCallBackWorkQueue(pDev);
    // Stop reading
@@ -2060,6 +2130,7 @@ int ReadSync(
             else
             *iID = -__LINE__;
          }
+         //userspace neglect -EINTR  
          if(result!=-EINTR)
          {
              flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
@@ -2648,7 +2719,7 @@ int GetClientID(
             DBG( "Read mismatch/failure, unlock and continue!\n" );
             spin_unlock_irq(&(pDev->notif_lock));
             LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
-            result = -1;
+            result = -ETIMEDOUT;
          }
       }
       else
@@ -2661,7 +2732,7 @@ int GetClientID(
              // End critical section
              spin_unlock_irq(&(pDev->notif_lock));
              LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
-             result = -1;
+             result = -ETIMEDOUT;
       }
      /* Upon return from QMICTLGetClientIDResp, clientID
       * low address contains the Service Number (SN), and
@@ -2673,6 +2744,8 @@ int GetClientID(
 
       if (result < 0)
       {
+         DBG( "OVERWRITE result:%d!\n",result );
+         result = -ETIMEDOUT;
          return result;
       }
    }
@@ -4366,7 +4439,8 @@ int UserspaceClose(
      pFilpData->mClientID =  0xffff;
    }
    wait_interrupt();
-   kfree( pFilp->private_data );
+   if(pFilp->private_data)
+      kfree( pFilp->private_data );
 
    // Disable pFilpData so they can't keep sending read or write
    //    should this function hang
@@ -5831,6 +5905,7 @@ int CloseFileInode(sGobiUSBNet * pDev,int iCount)
                                 DBG("ForceFilpClose:%d\n",pEachTask->pid);
                                 ForceFilpClose(pFilp);
                              }
+                             //Cannot return 1 here, task won't wakeup to close
                              if(reffrom>0)
                              {
                                  return 1;
@@ -5922,6 +5997,12 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
       printk("preempt_disable");
       preempt_disable();
    }
+   #ifdef CONFIG_ANDROID
+   if(pDev)
+   {
+      gobiLockSystemSleep(pDev);
+   }
+   #endif
    pDev->mbUnload = eStatUnloading;
    qmux_table[pDev->iDeviceMuxID]=0;
    // Should never happen, but check anyway
@@ -6062,8 +6143,9 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
                msleep_interruptible(400);
             }
          }
-         
-         
+         #ifdef CONFIG_ANDROID
+         gobiStayAwake(pDev);
+         #endif         
       }
       else
       {
@@ -6146,12 +6228,18 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    // Hold onto cdev memory location until everyone is through using it.
    // Timeout after 30 seconds (10 ms interval).  Timeout should never happen,
    // but exists to prevent an infinate loop just in case.
-
+   #ifdef CONFIG_ANDROID
+   for (tries = 0; tries < 10; tries++)
+   #else
    for (tries = 0; tries < 60; tries++)
+   #endif
    {
       int ref = gobi_atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
       if (ref > 1)
       {
+         #ifdef CONFIG_ANDROID
+         gobiStayAwake(pDev);
+         #endif
          wait_ms(500);
          ref = gobi_atomic_read( &pDev->mQMIDev.mCdev.kobj.kref.refcount );
          if(ref>1)
@@ -6233,7 +6321,7 @@ int QMIReady(
       {
          return -1;
       }
-       if(isModuleUnload(pDev))
+      if(isModuleUnload(pDev))
       {
          if(pWriteBuffer)
             kfree( pWriteBuffer );
@@ -6246,6 +6334,9 @@ int QMIReady(
             kfree( pWriteBuffer );
          return -ENXIO;\
       }
+      #ifdef CONFIG_ANDROID
+      gobiStayAwake(pDev);
+      #endif
       // Start read
       transactionID =QMIXactionIDGet(pDev);
       
@@ -6285,7 +6376,7 @@ int QMIReady(
          LocalClientMemUnLockSpinLockIRQRestore ( pDev ,flags,__LINE__);
          return -1;
       }
-       if(isModuleUnload(pDev))
+      if(isModuleUnload(pDev))
       {
          if(pWriteBuffer)
             kfree( pWriteBuffer );
@@ -6498,11 +6589,17 @@ void QMIWDSCallback(
          {
             DBG( "Net device link is connected\n" );
             GobiClearDownReason( pDev, NO_NDIS_CONNECTION );
+            #ifdef CONFIG_ANDROID
+            SetTxRxStat(pDev, RESUME_RX_OKAY | RESUME_TX_OKAY);
+            #endif
          }
          else
          {
             DBG( "Net device link is disconnected\n" );
             GobiSetDownReason( pDev, NO_NDIS_CONNECTION );
+            #ifdef CONFIG_ANDROID
+            SetTxRxStat(pDev, RESUME_TX_RX_DISABLE);
+            #endif
          }
       }
    }
@@ -6516,6 +6613,12 @@ void QMIWDSCallback(
                        0,
                        QMIWDSCallback,
                        pData ,0);
+   #ifdef CONFIG_ANDROID
+   if(pDev)
+   {
+      PRINT_WS_LOCK(pDev->ws);
+   }
+   #endif
 
    if (result != 0)
    {
@@ -8981,6 +9084,20 @@ int GobiInitWorkQueue(sGobiUSBNet *pGobiDev)
       }
       SetPrivateWorkQueuesWQByTableIndex(tableindex,interfaceindex,pGobiDev->wqProcessReadCallback,eWQ_URBCB);
    }
+   #ifdef CONFIG_ANDROID
+   pGobiDev->wqLockSystemSleep = create_workqueue(szProcessName);
+   if (!pGobiDev->wqLockSystemSleep)
+   {
+      printk("Create Work Queue LockSystemSleep Failed\n");
+      return -1;
+   }
+   pGobiDev->wqUnLockSystemSleep = create_workqueue(szProcessName);
+   if (!pGobiDev->wqUnLockSystemSleep)
+   {
+      printk("Create Work Queue UnLockSystemSleep Failed\n");
+      return -1;
+   }
+   #endif
    return 0;
 }
 
@@ -9009,7 +9126,10 @@ void GobiDestoryWorkQueue(sGobiUSBNet *pGobiDev)
    GobiCancelReadCallBackWorkQueue(pGobiDev);
 
    GobiCancelProbeWorkQueue(pGobiDev);
-      
+   #ifdef CONFIG_ANDROID   
+   GobiCancelLockSystemSleepWorkQueue(pGobiDev);
+   GobiCancelUnLockSystemSleepWorkQueue(pGobiDev);
+   #endif
    ClearPrivateWorkQueuesProcessByTableIndex(tableindex,
                   interfaceindex);
    
@@ -9289,6 +9409,199 @@ static void gobiProcessReadURB(sGobiUSBNet *pGobiDev)
             ProcessReadWorkFunction);
    queue_delayed_work(pGobiDev->wqProcessReadCallback, &pGobiDev->dwProcessReadCallback, 0);
 }
+#ifdef CONFIG_ANDROID
+/*===========================================================================
+ProcessLockSystemSleepFunction
+
+   ProcessLockSystemSleepFunction (Private Method)
+
+DESCRIPTION:
+   Process ReadCallback. 
+
+PARAMETERS:
+   w                 [ I ] - Pointer to work_struct pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+static void ProcessLockSystemSleepFunction(struct work_struct *w)
+{
+   struct delayed_work *dwork;
+   sGobiUSBNet *pGobiDev = NULL;
+   dwork = to_delayed_work(w);
+   pGobiDev = container_of(dwork, sGobiUSBNet, dwLockSystemSleep);
+   if(pGobiDev!=NULL)
+   {
+      gobiStayAwake(pGobiDev);
+   }
+   else
+   {
+      DBG("pGobiDev NULL\n");
+   }
+}
+
+/*===========================================================================
+gobiLockSystemSleep
+
+
+   gobiLockSystemSleep (Private Method)
+
+DESCRIPTION:
+   Add delayed work to wqProcessReadCallback.
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to sGobiUSBNet pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+void gobiLockSystemSleep(sGobiUSBNet *pGobiDev)
+{
+   WLDEBUG("gobiLockSystemSleep\n");
+   GobiCancelLockSystemSleepWorkQueue(pGobiDev);
+   INIT_DELAYED_WORK(&pGobiDev->dwLockSystemSleep,
+            ProcessLockSystemSleepFunction);
+   queue_delayed_work(pGobiDev->wqLockSystemSleep, &pGobiDev->dwLockSystemSleep, 0);
+}
+
+/*===========================================================================
+gobiPmRelax
+
+   gobiPmRelax (Private Method)
+
+DESCRIPTION:
+   run __pm_relax. 
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to sGobiUSBNet pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+void gobiPmRelax(sGobiUSBNet *pGobiDev)
+{
+   if(pGobiDev)
+   {
+      struct wakeup_source *ws = pGobiDev->ws;
+      if(ws)
+      {
+         PRINT_WS_LOCK(ws);
+         WLDEBUG("__pm_relax start\n");
+         __pm_relax(ws);
+         WLDEBUG("__pm_relax end\n");
+         PRINT_WS_LOCK(ws);
+      }
+   }   
+}
+
+/*===========================================================================
+Gobi_pm_stay_awake
+
+   Gobi_pm_stay_awake (Private Method)
+
+DESCRIPTION:
+   run __pm_stay_awake. 
+
+PARAMETERS:
+   ws                 [ I ] - Pointer to wakeup_source pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+void Gobi_pm_stay_awake(struct wakeup_source *ws)
+{
+   if(ws)
+   {
+      if(!ws->active)
+      {
+         WLDEBUG("__pm_stay_awake start\n");
+         __pm_stay_awake(ws);
+         WLDEBUG( "__pm_stay_awake complete\n");
+      }
+      PRINT_WS_LOCK(ws);
+   }
+}
+
+/*===========================================================================
+gobiStayAwake
+
+   gobiStayAwake (Private Method)
+
+DESCRIPTION:
+   Keep system stay awake not suspend. 
+
+PARAMETERS:
+   ws                 [ I ] - Pointer to wakeup_source pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+void gobiStayAwake(sGobiUSBNet *pGobiDev)
+{
+   if (GobiTestDownReason( pGobiDev, DRIVER_SUSPENDED ) == false)
+   {
+      WLDEBUG( "pm_stay_awake\n");
+      pm_stay_awake(&pGobiDev->mpIntf->dev);
+   }
+   if(pGobiDev)
+   {
+      struct wakeup_source *ws = pGobiDev->ws;
+      if(ws)
+      {
+         Gobi_pm_stay_awake(ws);  
+      }
+   }
+}
+
+/*===========================================================================
+ProcessUnLockSystemSleepFunction
+
+   ProcessUnLockSystemSleepFunction (Private Method)
+
+DESCRIPTION:
+   Work queue handler to release wake lock. 
+
+PARAMETERS:
+   w                 [ I ] - Pointer to work_struct pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+static void ProcessUnLockSystemSleepFunction(struct work_struct *w)
+{
+   struct delayed_work *dwork;
+   sGobiUSBNet *pGobiDev = NULL;
+   dwork = to_delayed_work(w);
+   pGobiDev = container_of(dwork, sGobiUSBNet, dwUnLockSystemSleep);
+   if(pGobiDev!=NULL)
+   {
+      WLDEBUG( "gobiPmRelax\n");
+      gobiPmRelax(pGobiDev);
+   }
+   else
+   {
+      DBG("pGobiDev NULL\n");
+   }
+}
+
+/*===========================================================================
+gobiUnLockSystemSleep
+
+   gobiUnLockSystemSleep (Private Method)
+
+DESCRIPTION:
+   Add delayed work to wqProcessReadCallback.
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to sGobiUSBNet pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+void gobiUnLockSystemSleep(sGobiUSBNet *pGobiDev)
+{
+   WLDEBUG( "gobiUnLockSystemSleep\n");
+   GobiCancelUnLockSystemSleepWorkQueue(pGobiDev);
+   INIT_DELAYED_WORK(&pGobiDev->dwUnLockSystemSleep,
+            ProcessUnLockSystemSleepFunction);
+   queue_delayed_work(pGobiDev->wqUnLockSystemSleep, &pGobiDev->dwUnLockSystemSleep, DELAY_MS_DEFAULT);
+}
+#endif
+
+
 /*===========================================================================
 GenerateProcessName
 
@@ -9640,8 +9953,59 @@ void GobiCancelReadCallBackWorkQueue(sGobiUSBNet *pGobiDev)
          &pGobiDev->dwProcessReadCallback);
    }
 }
+#ifdef CONFIG_ANDROID
+/*===========================================================================
+GobiCancelReadCallBackWorkQueue
 
+   GobiCancelLockSystemSleepWorkQueue (Private Method)
 
+DESCRIPTION:
+   Cancel device LockSystemSleep work queue.
+
+PARAMETERS:
+   pGobiDev          [ I ] - pointer to sGobiUSBNet.
+RETURN VALUE:
+    none
+===========================================================================*/
+void GobiCancelLockSystemSleepWorkQueue(sGobiUSBNet *pGobiDev)
+{
+   if( (pGobiDev != NULL) && 
+      (pGobiDev->wqLockSystemSleep != NULL))
+   {
+      
+      DBG("%s\n",__FUNCTION__);
+      GobiCancelDelayWorkWorkQueueWithoutUSBLockDevice(pGobiDev,
+         pGobiDev->wqLockSystemSleep,
+         &pGobiDev->dwLockSystemSleep);
+   }
+} 
+
+/*===========================================================================
+GobiCancelUnLockSystemSleepWorkQueue
+
+   GobiCancelUnLockSystemSleepWorkQueue (Private Method)
+
+DESCRIPTION:
+   Cancel device LockSystemSleep work queue.
+
+PARAMETERS:
+   pGobiDev          [ I ] - pointer to sGobiUSBNet.
+RETURN VALUE:
+    none
+===========================================================================*/
+void GobiCancelUnLockSystemSleepWorkQueue(sGobiUSBNet *pGobiDev)
+{
+   if( (pGobiDev != NULL) && 
+      (pGobiDev->wqUnLockSystemSleep != NULL))
+   {
+      
+      DBG("%s\n",__FUNCTION__);
+      GobiCancelDelayWorkWorkQueueWithoutUSBLockDevice(pGobiDev,
+         pGobiDev->wqUnLockSystemSleep,
+         &pGobiDev->dwUnLockSystemSleep);
+   }
+} 
+#endif
 /*===========================================================================
 METHOD:
    TransceiveReleaseClientID (Private Method)
@@ -9786,6 +10150,65 @@ bool TransceiveReleaseClientID(
    return bRet;
 }
 
+/*===========================================================================
+GobiCancelDelayWorkWorkQueueWithoutUSBLockDevice
+
+
+   GobiCancelDelayWorkWorkQueueWithoutUSBLockDevice (Private Method)
+
+DESCRIPTION:
+   Cancel work queue and delayed work.
+
+PARAMETERS:
+   pGobiDev          [ I ] - pointer to sGobiUSBNet.
+   wq                [ I ] - pointer to workqueue_struct.
+   dw                [ I ] - pointer to delayed_work.
+
+RETURN VALUE:
+    none
+===========================================================================*/
+void GobiCancelDelayWorkWorkQueueWithoutUSBLockDevice(
+   sGobiUSBNet *pGobiDev,
+   struct workqueue_struct *wq, 
+   struct delayed_work *dw)
+{
+   if( (pGobiDev != NULL) && 
+      (wq != NULL) && 
+      (dw != NULL) )
+   {
+      struct usb_device *dev = NULL;
+      unsigned int flag = 0;
+      if( pGobiDev->mUsb_Interface == NULL )
+      {
+         return ;
+      }
+      dev = interface_to_usbdev(pGobiDev->mUsb_Interface);
+      flag = gobi_work_busy(dw);
+      if(flag)
+      {
+         #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 2,6,36 ))
+         if(flag & WORK_BUSY_RUNNING)
+         {
+            DBG("flush_delayed_work %d\n",
+                pGobiDev->mpIntf->cur_altsetting->desc.bInterfaceNumber);
+            flush_delayed_work(dw);
+         }
+         #endif
+         if(cancel_delayed_work (dw))
+         {
+            DBG("flush_workqueue %d\n",
+                pGobiDev->mpIntf->cur_altsetting->desc.bInterfaceNumber);
+            flush_workqueue(wq);
+         }
+      }
+      else
+      {
+         DBG("flush_work \n %d\n",
+            pGobiDev->mpIntf->cur_altsetting->desc.bInterfaceNumber);
+         flush_work(&dw->work);
+      }
+   }
+}
 
 /*===========================================================================
 GobiCancelDelayWorkWorkQueue
@@ -9883,4 +10306,36 @@ void GobiCancelProbeWorkQueue(sGobiUSBNet *pGobiDev)
          &pGobiDev->dwprobe);
    }
 }
+#ifdef CONFIG_ANDROID
+//Don't do this before SetCurrentSuspendStat
+void SetTxRxStat(sGobiUSBNet *pGobiDev,int state)
+{
+   unsigned long flags = 0;
+   spin_lock_irqsave(&pGobiDev->sSuspendLock,flags);
+   if(state==RESUME_TX_RX_DISABLE)
+   {
+      pGobiDev->iSuspendReadWrite = RESUME_TX_RX_DISABLE;
+   }
+   else
+   {
+      pGobiDev->iSuspendReadWrite |= state;
+      DBG("%s ON\n",(state==RESUME_RX_OKAY)? "Rx" : "Tx");
+   }
+   spin_unlock_irqrestore(&pGobiDev->sSuspendLock,flags);
 
+}
+
+int GetTxRxStat(sGobiUSBNet *pGobiDev,int Channel)
+{
+   if(Channel & RESUME_RX_OKAY)
+   {
+      return (pGobiDev->iSuspendReadWrite & RESUME_RX_OKAY);
+   }
+   if(Channel & RESUME_TX_OKAY)
+   {
+      return (pGobiDev->iSuspendReadWrite & RESUME_TX_OKAY);
+   }
+   DBG( "%s OFF\n",(Channel==RESUME_RX_OKAY)? "Rx" : "Tx");
+   return 0;
+}
+#endif
