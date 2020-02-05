@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2019-09-13/SWI_2.38"
+#define DRIVER_VERSION "2019-11-22/SWI_2.39"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -1016,12 +1016,21 @@ int GobiOpen(
       int count = 0;
       if(portdata->iGPSStartState == eSendUnknown)
       {
-        unsigned long now = jiffies;
+        #ifdef CONFIG_PM
+        if( (delay_open_gps_port*1000) > jiffies_to_msecs(jiffies - pPort->serial->dev->connect_time))
+        {
+           unsigned long diff = (delay_open_gps_port*1000) - jiffies_to_msecs(jiffies - pPort->serial->dev->connect_time );
+           //Not wait more then delay_open_gps_port Seconds.
+            DBG("connect_time: %u msec\n",jiffies_to_msecs(jiffies - pPort->serial->dev->connect_time ));
+           if( diff > (delay_open_gps_port*1000))
+        #else
+           unsigned long now = jiffies;
         if(now < portdata->ulExpires)
         {
            unsigned long diff = jiffies_to_msecs(portdata->ulExpires-now);
            //Not wait more then delay_open_gps_port Seconds.
            if( diff > (delay_open_gps_port*1000))
+           #endif
            {
               DBG("Overwrite DELAY %lu msec\n",diff);
               diff = delay_open_gps_port*1000;

@@ -182,11 +182,13 @@ if(wakelock_debug == 1)\
 #define QMINAS   3
 #define QMIWMS   5
 #define QMIVOICE 9
+#define QMIUIM   0x0B
 
 #define QMI_WMS_EVENT_REPORT_IND        0x01
 #define QMI_NAS_SERVING_SYSTEM_IND      0x24
 #define QMI_VOICE_ALL_CALL_STATUS_IND   0x2E
 #define QMI_WDS_GET_PKT_SRVC_STATUS_IND 0x22
+#define QMI_UIM_SIM_STATUS_CHANGED_IND  0x32
 
 #define u8        unsigned char
 #define u16       unsigned short

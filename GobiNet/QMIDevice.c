@@ -268,6 +268,7 @@ extern bool iIsSpinIsLockedSupported;
 bool isFilpSignalPending(sQMIFilpStorage *pFilpData);
 void ReleaseFilpClientID(sQMIFilpStorage *pFilpData);
 void assign_filp_pointer_to_null(struct file *filp);
+bool bIsQMIInterrupt(struct urb *pIntURB);
 
 // IOCTL to generate a client ID for this service type
 #define IOCTL_QMI_GET_SERVICE_FILE 0x8BE0 + 1
@@ -1520,8 +1521,8 @@ void IntCallback( struct urb * pIntURB )
       #endif
       //AR7554RD returned interrupt buffer not matching expected mask
       //thus, length check only
-      if (pIntURB->actual_length == 8)
-
+      if ((pIntURB->actual_length == 8) ||
+          bIsQMIInterrupt(pIntURB))
       {
          // Time to read
          usb_fill_control_urb( pDev->mQMIDev.mpReadURB,
@@ -1746,6 +1747,15 @@ int StartRead( sGobiUSBNet * pDev )
       return -ENXIO;
    }
    mb();
+   usb_reset_endpoint(pDev->mpNetDev->udev,0);
+   usb_reset_endpoint(pDev->mpNetDev->udev,
+      pendp->bEndpointAddress);
+
+   usb_clear_halt(pDev->mpNetDev->udev,
+      usb_rcvctrlpipe( pDev->mpNetDev->udev, 0 ));
+   usb_clear_halt(pDev->mpNetDev->udev,
+      usb_rcvintpipe( pDev->mpNetDev->udev,
+         pendp->bEndpointAddress));
    return usb_submit_urb( pDev->mQMIDev.mpIntURB, GOBI_GFP_ATOMIC );
 }
 
@@ -3546,6 +3556,15 @@ long UserspaceunlockedIOCTL(
       DBG( "Device Clsoing.." );
       return -ENXIO;
    }
+   #ifdef CONFIG_PM
+   if(bIsSuspend(pFilpData->mpDev))
+   {
+      DBG("RESUME FROM SUSPEND\n");
+      gobi_usb_autopm_get_interface_async( pFilpData->mpDev->mpIntf );
+      gobi_usb_autopm_put_interface_async( pFilpData->mpDev->mpIntf );
+      return -EINTR;
+   }
+   #endif
    pFilpData->pIOCTLTask = current;
    switch (cmd)
    {
@@ -4592,6 +4611,15 @@ ssize_t UserspaceRead(
       DBG( "Device Clsoing.." );
       return -ENXIO;
    }
+   #ifdef CONFIG_PM
+   if(bIsSuspend(pFilpData->mpDev))
+   {
+      DBG("RESUME FROM SUSPEND\n");
+      gobi_usb_autopm_get_interface_async( pFilpData->mpDev->mpIntf );
+      gobi_usb_autopm_put_interface_async( pFilpData->mpDev->mpIntf );
+      return -EINTR;
+   }
+   #endif
    iCount = pFilpData->iCount;
    pFilpData->pReadTask = current;
 
@@ -4768,7 +4796,15 @@ ssize_t UserspaceWrite(
       DBG( "Device Clsoing.." );
       return -ENXIO;
    }
-
+   #ifdef CONFIG_PM
+   if(bIsSuspend(pFilpData->mpDev))
+   {
+      DBG("RESUME FROM SUSPEND\n");
+      gobi_usb_autopm_get_interface_async( pFilpData->mpDev->mpIntf );
+      gobi_usb_autopm_put_interface_async( pFilpData->mpDev->mpIntf );
+      return -EINTR;
+   }
+   #endif
    // Copy data from user to kernel space
    pWriteBuffer = kmalloc( size + QMUXHeaderSize(), GOBI_GFP_KERNEL );
    if (pWriteBuffer == NULL)
@@ -4861,6 +4897,15 @@ unsigned int UserspacePoll(
       DBG( "Device Disconnected!\n" );
       return -ENXIO;
    }
+   #ifdef CONFIG_PM
+   if(bIsSuspend(pFilpData->mpDev))
+   {
+      DBG("RESUME FROM SUSPEND\n");
+      gobi_usb_autopm_get_interface_async( pFilpData->mpDev->mpIntf );
+      gobi_usb_autopm_put_interface_async( pFilpData->mpDev->mpIntf );
+      return -EINTR;
+   }
+   #endif
    // Critical section
    flags = LocalClientMemLockSpinLockIRQSave( pFilpData->mpDev , __LINE__);
 
@@ -10363,6 +10408,10 @@ void GobiCancelDelayWorkWorkQueueWithoutUSBLockDevice(
       {
          DBG("flush_work \n %d\n",
             pGobiDev->mpIntf->cur_altsetting->desc.bInterfaceNumber);
+         if(!dw->work.func)
+         {
+            return ;
+         }
          flush_work(&dw->work);
       }
    }
@@ -10433,6 +10482,10 @@ void GobiCancelDelayWorkWorkQueue(
          {
             DBG("flush_work \n %d\n",
                pGobiDev->mpIntf->cur_altsetting->desc.bInterfaceNumber);
+            if(!dw->work.func)
+            {
+               return ;
+            }
             flush_work(&dw->work);
          }
       }
@@ -10643,5 +10696,37 @@ void assign_filp_pointer_to_null(struct file *filp)
    }
    rcu_read_unlock();
    return ;
+}
+
+/*===========================================================================
+bIsQMIInterrupt
+
+   bIsQMIInterrupt (Private Method)
+
+DESCRIPTION:
+   Validate QMI interrupt URB.
+
+PARAMETERS:
+   pIntURB          [ I ] - pointer to URB.
+RETURN VALUE:
+   true - Is QMI Interrupt URB.
+   false - NOT QMI Interrupt URB.
+===========================================================================*/
+bool bIsQMIInterrupt(struct urb *pURB)
+{
+   const u8 QMIIntBytes[6]={0xA1,0x01,0x00,0x00,0x08,0x00};
+   if(!pURB)
+   {
+      return false;
+   }
+   if(pURB->actual_length < 6)
+   {
+      return false;
+   }
+   if(memcmp(QMIIntBytes,pURB->transfer_buffer,sizeof(QMIIntBytes))==0)
+   {
+      return true;
+   }
+   return false;
 }
 
