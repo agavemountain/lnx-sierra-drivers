@@ -136,9 +136,17 @@ POSSIBILITY OF SUCH DAMAGE.
 #define SEMI_INIT_DEFAULT_VALUE 0
 #define QMI_CONTROL_MSG_DELAY_MS 100
 #define QMI_CONTROL_MAX_MSG_DELAY_MS QMI_CONTROL_MSG_DELAY_MS * 5
+#define QMI_CONTROL_MAX_RESUME_MSG_DELAY_MS QMI_CONTROL_MSG_DELAY_MS * 20
+
 // QMI CTL
 #define QMI_CTL_IND 0x02
 #define QMI_CTL_SYNC_IND 0x0027
+
+// Set Power Save Mode
+#define QMI_CTL_PWR_CONF_RSP 0x002A
+
+#define DEFAULT_SERVICE_AWAKE_TIMEOUT round_jiffies_relative(8*HZ)
+#define WDS_START_NET 0x0020
 
 extern int qcqmi_table[MAX_QCQMI];
 extern int qmux_table[MAX_QCQMI];
@@ -171,6 +179,47 @@ extern int qmux_table[MAX_QCQMI];
       printk(KERN_ERR "Invalid entry:(%d) at qcqmi_table\n",i);\
    }\
 })
+
+#define gobi_nop(ms)({\
+   unsigned long onesec = 0;\
+   onesec = jiffies + msecs_to_jiffies(ms);\
+   printk(KERN_INFO "gobi_nop start\n");\
+   while(jiffies<onesec)\
+   {\
+      msleep(100);\
+   }\
+   printk(KERN_INFO "gobi_nop end\n");\
+})
+   
+#define IsPIDVID(pDev,PID,VID)({\
+   bool bValue=false;\
+   if( (le16_to_cpu(pDev->udev->descriptor.idVendor==VID)) && \
+          (le16_to_cpu(pDev->udev->descriptor.idProduct==PID)) )\
+   {\
+      bValue=true;\
+   }\
+   bValue;\
+})
+
+#define Is9x50Device(pDev)({\
+   IsPIDVID(pDev,0x9091,0x1199)|\
+   IsPIDVID(pDev,0x90B1,0x1199)|\
+   IsPIDVID(pDev,0x90C1,0x1199);\
+})
+
+#define IsSendToCurrIntf(pDev)({\
+   IsPIDVID(pDev,0x9081,0x1199)|\
+   IsPIDVID(pDev,0x68c0,0x1199)|\
+   IsPIDVID(pDev,0x9071,0x1199)|\
+   Is9x50Device(pDev);\
+})
+
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,0,0 ))
+   #define gobi_dev_change_flags(dev,flags) dev_change_flags(dev, flags, NULL)
+#else
+   #define gobi_dev_change_flags(dev,flags) dev_change_flags(dev, flags)
+#endif
 
 extern sGobiPrivateWorkQueues GobiPrivateWorkQueues[MAX_QCQMI][MAX_QCQMI_PER_INTF];
 //Register State
@@ -581,8 +630,33 @@ void GobiDestoryWorkQueue(sGobiUSBNet *pGobiDev);
 // Clean up work queues in sGobiPrivateWorkQueues
 int iClearWorkQueuesByTableIndex(int index);
 
+//Add UP and RUNNING FLAGS to netdev.
+int gobi_activate_net(struct net_device *net);
+//Print reference WDS client ID.
+void PrintActiveWDSCID(sGobiUSBNet *pDev  ,u16 WDSClientID);
+//Cancel device NetDevCallback work queue.
+void GobiCancelwqNetDevWorkQueue(sGobiUSBNet *pGobiDev);
+//Add delayed work to wqNetDev.
+void gobiProcessNetDev(sGobiUSBNet *pGobiDev); 
+//Extract IPv4 Address Information to sGobiUSBNet.
+void GetIPv4Address(
+   sGobiUSBNet *pDev,
+   void *pBuffer,
+   u16 buffSize,
+   u16 ClientID);
+//Extract IPv6 Address Information to sGobiUSBNet.
+void GetIPv6Address(
+   sGobiUSBNet *pDev,
+   void *pBuffer,
+   u16 buffSize,
+   u16 ClientID);
+// Clear Net device statistics.
+void ClearUsbNetTxStatics(struct usbnet *pDev);
+// Clear Parent Net device statistics.
+void ClearParentTxStatics(struct net_device *net);
+
 #ifdef CONFIG_ANDROID
-#define  DELAY_MS_DEFAULT  round_jiffies_relative(30*HZ)
+#define  DELAY_MS_DEFAULT  round_jiffies_relative(0*HZ)
 //
 void SetTxRxStat(sGobiUSBNet *pGobiDev,int state);
 //
@@ -598,3 +672,19 @@ void gobiPmRelax(sGobiUSBNet *pGobiDev);
 //
 int GenerateProcessName(const char *pPrefix,char *szProcessName,unsigned sizeofName,sGobiUSBNet *pGobiDev );
 #endif
+
+//
+void SetCurrentSuspendStat(sGobiUSBNet *pGobiDev,bool bSuspend);
+//
+int ResetReadEndpoints( sGobiUSBNet * pDev );
+//
+int ResetRcvReadEndpoints( sGobiUSBNet * pDev );
+//
+int ResetCtrlReadEndpoints( sGobiUSBNet * pDev );
+
+//Stay awake on selected service
+int StayAwakeOnService(void *pBuffer,sGobiUSBNet *pGobiDev);
+//
+void gobiSetPowerSaveMode(sGobiUSBNet *pGobiDev);
+//
+void GobiCancelSetPowerSaveModeWorkQueue(sGobiUSBNet *pGobiDev);

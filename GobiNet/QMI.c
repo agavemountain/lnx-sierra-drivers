@@ -99,6 +99,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/kernel.h>
 #include "Structs.h"
 #include "QMI.h"
+#include "QMIDevice.h"
 
 extern int debug;
 
@@ -303,6 +304,13 @@ RETURN VALUE:
 u16  QMICTLGetVersionInfoReqSize( void )
 {
    return sizeof( sQMUX ) + 6; 
+}
+
+
+// Get size of buffer needed for QMUX + QMIWDSGetRuntimeSettingsReq
+u16 QMIWDSGetRuntimeSettingsReqSize( void )
+{
+    return sizeof( sQMUX ) + 7 + 1 + 2 + 4;
 }
 
 /*=========================================================================*/
@@ -2286,5 +2294,253 @@ int QMIWDSSetQMuxIDReq(
    *(u8 *)(pBuffer + sizeof( sQMUX ) + 10)  = MuxID;
    // success
    return sizeof( sQMUX ) + 11;
+}
+
+/*===========================================================================
+METHOD:
+   QMIWDSGetRuntimeSettingsReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI WDS Get Runtime Settings Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMIWDSGetRuntimeSettingsReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u16      transactionID )
+{
+   if (pBuffer == 0 || buffSize < QMIWDSGetRuntimeSettingsReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   // QMI WDS Get Runtime Settings REQ
+   // Request
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0x00;
+   // Transaction ID
+   put_unaligned(cpu_to_le16(transactionID), (u16 *)(pBuffer + sizeof( sQMUX ) + 1));
+   // Message ID
+   put_unaligned(cpu_to_le16(0x002d), (u16 *)(pBuffer + sizeof( sQMUX ) + 3));
+   // Size of TLV's
+   put_unaligned(cpu_to_le16(0x0007), (u16 *)(pBuffer + sizeof( sQMUX ) + 5));
+
+    // Report channel rate TLV
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 7)  = 0x10;
+   // Size
+   put_unaligned( cpu_to_le16(0x0004), (u16 *)(pBuffer + sizeof( sQMUX ) + 8));
+   // Stats mask
+   put_unaligned( cpu_to_le32(0xffffffff), (u32 *)(pBuffer + sizeof( sQMUX ) + 10) );
+
+   // success
+   return sizeof( sQMUX ) + 14;
+}
+
+/*===========================================================================
+METHOD:
+   QMIWDSRuntimeResp (Public Method)
+
+DESCRIPTION:
+   Parse the QMI WDS Get runtime settings Settings Request
+
+PARAMETERS
+   pDev            [ I ] - sGobiUSBNet pointer
+   pBuffer         [ I ] - Buffer to be parsed
+   buffSize        [ I ] - Size of pBuffer
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int QMIWDSRuntimeResp(
+      sGobiUSBNet *pDev,
+      void *   pBuffer,
+      u16      buffSize,
+      u16      ClientID
+)
+{
+   int result = -1;
+   
+   // Ignore QMUX and SDU
+   u8 offset = sizeof( sQMUX ) + 3;
+
+   if(!pDev)
+   {
+      return -EFAULT;
+   }
+   if(!pDev->u8AutoIPEnable)
+   {
+      return -EFAULT;
+   }
+
+   if (pBuffer == 0
+   || buffSize < offset )
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+
+   result = ValidQMIMessage( pBuffer, buffSize );
+   if (result != 0)
+   {
+      DBG("0x%02x %s:Resp result:%d\n",
+         ClientID,
+         pDev->mpNetDev->net->name,
+         result);
+      return -EFAULT;
+   }
+   result = GetQMIMessageID( pBuffer, buffSize );
+   // QMI WDS Get runtime settings Resp
+   if (result == QMI_WDS_GET_RUNTIMET_SETTINGS_MSGID)
+   {
+      u8 *pu8Data = NULL;
+      u8 u8Data = 0xff;
+      pu8Data = &u8Data;
+      DBG("0x%02x %s:Resp\n",
+         ClientID,
+         pDev->mpNetDev->net->name);
+      PrintActiveWDSCID(pDev,ClientID);
+      if(GetTLV( pBuffer, buffSize, 0x11, (void*)pu8Data, 1 ) ==1)
+      {
+         if( (u8Data == 0)||
+         (u8Data == 3))
+         {
+            GetIPv4Address(pDev,pBuffer,buffSize,ClientID);
+         }
+         if( (u8Data == 2)||
+            (u8Data == 3))
+         {
+            GetIPv6Address(pDev,pBuffer,buffSize,ClientID);
+         }
+         pDev->wdsNetResp.type = u8Data;
+         return 0;
+      }
+      
+   }
+   return -EFAULT;
+}
+
+/*===========================================================================
+METHOD:
+   QMIWDSSetIPFamilyReqSize (Public Method)
+
+DESCRIPTION:
+   Get size of buffer needed for QMUX + QMIWDSSetQMuxIDReq
+
+RETURN VALUE:
+   u16 - size of buffer
+===========================================================================*/
+u16 QMIWDSSetIPFamilyReqSize( void )
+{
+   return sizeof( sQMUX ) + 11;
+}
+
+/*===========================================================================
+METHOD:
+   QMIWDSSetIPFamilyReq (Public Method)
+
+DESCRIPTION:
+   Fill buffer with QMI WDS Set IP Family Request
+
+PARAMETERS
+   pBuffer         [ 0 ] - Buffer to be filled
+   buffSize        [ I ] - Size of pBuffer
+   transactionID   [ I ] - Transaction ID
+
+RETURN VALUE:
+   int - Positive for resulting size of pBuffer
+         Negative errno for error
+===========================================================================*/
+int QMIWDSSetIPFamilyReq(
+   void *   pBuffer,
+   u16      buffSize,
+   u16      transactionID,
+   u8       u8Value)
+{
+   if (pBuffer == 0 || buffSize < QMIWDSSetIPFamilyReqSize() )
+   {
+      return -ENOMEM;
+   }
+
+   // QMI WDS SET IP FAMILY REQ
+   // Request
+   *(u8 *)(pBuffer + sizeof( sQMUX ))  = 0;
+   // Transaction ID
+   *(u16 *)(pBuffer + sizeof( sQMUX ) + 1) = cpu_to_le16(transactionID);
+   // Message ID
+   *(u16 *)(pBuffer + sizeof( sQMUX ) + 3) = cpu_to_le16(QMI_WDS_SET_IP_FAMILY_MSGID);
+   // Size of TLV's
+   *(u16 *)(pBuffer + sizeof( sQMUX ) + 5) = cpu_to_le16(4);
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 7)  = 0x01;
+   *(u16 *)(pBuffer + sizeof( sQMUX ) + 8) = cpu_to_le16(1);
+   *(u8 *)(pBuffer + sizeof( sQMUX ) + 10)  = u8Value;
+   // success
+   return sizeof( sQMUX ) + 11;
+}
+
+/*===========================================================================
+METHOD:
+   QMIWDSSetIPFamilyResp (Public Method)
+
+DESCRIPTION:
+   Parse the QMI WDS Set IP Family Request
+
+PARAMETERS
+   pDev            [ I ] - sGobiUSBNet pointer
+   pBuffer         [ I ] - Buffer to be parsed
+   buffSize        [ I ] - Size of pBuffer
+
+RETURN VALUE:
+   int - 0 for success
+         Negative errno for error
+===========================================================================*/
+int QMIWDSSetIPFamilyResp(
+    sGobiUSBNet *pDev,
+      void *   pBuffer,
+      u16      buffSize)
+{
+   int result = -1;
+   
+   // Ignore QMUX and SDU
+   u8 offset = sizeof( sQMUX ) + 3;
+
+   if(!pDev)
+   {
+      return -EFAULT;
+   }
+   if(!pDev->u8AutoIPEnable)
+   {
+      return -EFAULT;
+   }
+
+   if (pBuffer == 0
+   || buffSize < offset )
+   {
+      return -ENOMEM;
+   }
+
+   pBuffer = pBuffer + offset;
+   buffSize -= offset;
+   result = ValidQMIMessage( pBuffer, buffSize );
+   if (result != 0)
+   {
+      return -EFAULT;
+   }
+   result = GetQMIMessageID( pBuffer, buffSize );
+   // QMI WDS Set IP Family Resp
+   if (result == QMI_WDS_SET_IP_FAMILY_MSGID)
+   {
+      return 0;      
+   }
+   return -EFAULT;
 }
 
