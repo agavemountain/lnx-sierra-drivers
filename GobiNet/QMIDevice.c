@@ -4029,7 +4029,11 @@ long UserspaceunlockedIOCTL(
              struct rtnl_link_stats64 Stats64;
              struct rtnl_link_stats64 *pStats = &Stats64;
              memset(&Stats64,0,sizeof(Stats64));
+             #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+             dev_get_tstats64(pDev->mpNetDev->net,pStats);
+             #else
              usbnet_get_stats64(pDev->mpNetDev->net,pStats); 
+             #endif
              #else
              struct net_device_stats * pStats = &(pDev->mpNetDev->net->stats);
              #endif
@@ -4331,7 +4335,11 @@ int UserspaceClose(
             if(!IsOpenTaskIsCurrent(pFilp))
             {
                DBG( "f_count %ld - ignoring close\n", refcnt);
+               #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+               if ((current->signal->flags & SIGNAL_GROUP_EXIT) || current->signal->group_exec_task)
+               #else
                if(signal_group_exit(current->signal))
+               #endif
                {
                   ReleaseFilpClientID(pFilpData);
                }
@@ -5133,7 +5141,11 @@ int wakeup_inode_process(struct file *pFilp,struct task_struct * pTask)
             return 0;
          }
          #endif
+         #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+         if(READ_ONCE(pTask->__state)==TASK_STOPPED)
+         #else
          if(pTask->state==TASK_STOPPED)
+         #endif
          {
             if (unlikely(pTask->signal->notify_count < 0))
             {
@@ -5220,7 +5232,11 @@ int wakeup_inode_process(struct file *pFilp,struct task_struct * pTask)
               return 0;
             }
             #endif
+            #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+            if(READ_ONCE(pEachTask->__state)==TASK_STOPPED)
+            #else
             if(pEachTask->state==TASK_STOPPED)//(pEachTask->state != TASK_STOPPED)
+            #endif
             {
               if (unlikely(pEachTask->signal->notify_count < 0))
               {
@@ -5452,7 +5468,11 @@ qmi_open(struct inode *inode, struct file *file)
 {
     char *data;
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,10,0 ))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+    data=pde_data(inode);
+#else
     data=PDE_DATA(inode);
+#endif
 #else
     data=PDE(inode)->data;
 #endif
@@ -5885,7 +5905,11 @@ RETURN VALUE:
 ===========================================================================*/
 void wakeup_target_process(struct task_struct * pTask)
 {
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+   if ((current->signal->flags & SIGNAL_GROUP_EXIT) || current->signal->group_exec_task)
+   #else
    if(signal_group_exit(current->signal))
+   #endif
    {
       return ;
    }
@@ -5902,7 +5926,11 @@ void wakeup_target_process(struct task_struct * pTask)
          return ;
       if(pTask==current)
          return ;
+      #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+      if(READ_ONCE(pTask->__state)!=TASK_STOPPED)
+      #else
       if(pTask->state!=TASK_STOPPED)
+      #endif
          return ;
       #if defined(CONFIG_SMP) || defined(CONFIG_DEBUG_SPINLOCK)
       while(raw_spin_is_locked(&pTask->pi_lock))
@@ -5937,7 +5965,11 @@ void wakeup_target_process(struct task_struct * pTask)
       return ;
       }
       #endif
+      #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+      if(READ_ONCE(pTask->__state)==TASK_STOPPED)
+      #else
       if(pTask->state==TASK_STOPPED)
+      #endif
       {
          if (unlikely(pTask->signal->notify_count < 0))
          {
@@ -8961,7 +8993,11 @@ struct net_device* gobi_qmimux_register_device(struct net_device *real_dev,int i
    }
    new_dev->netdev_ops = &gobi_qmimux_netdev_ops;
    new_dev->flags           = IFF_NOARP | IFF_MULTICAST;
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+   eth_random_addr(new_dev->dev_addr);
+   #else
    random_ether_addr(new_dev->dev_addr);
+   #endif
    if (!new_dev)
       return NULL;
    priv = netdev_priv(new_dev);

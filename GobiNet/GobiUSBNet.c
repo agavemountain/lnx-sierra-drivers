@@ -1036,6 +1036,9 @@ static int GobiNetDriverBind(
    struct usb_host_endpoint * pEndpoint = NULL;
    struct usb_host_endpoint * pIn = NULL;
    struct usb_host_endpoint * pOut = NULL;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+   u8 addr[ETH_ALEN];
+#endif
 
    // Verify one altsetting
    if (pIntf->num_altsetting != 1)
@@ -1113,7 +1116,18 @@ static int GobiNetDriverBind(
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION( 2,6,23 ))
    pIntf->dev.platform_data = (void *)pDev;
 #endif
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+   memcpy(addr, pDev->net->dev_addr, ETH_ALEN);
+   /* make MAC addr easily distinguishable from an IP header */
+   if (possibly_iphdr(pDev->net->dev_addr)) {
+       addr[0] |= 0x02;   /* set local assignment bit */
+       addr[0] &= 0xbf;   /* clear "IP" bit */
+   }
 
+   /* change MAC addr to include, ifacenum, and to be unique */
+   addr[ETH_ALEN-1] = pIntf->cur_altsetting->desc.bInterfaceNumber;
+   eth_hw_addr_set(pDev->net, addr);
+#else
    /* make MAC addr easily distinguishable from an IP header */
    if (possibly_iphdr(pDev->net->dev_addr)) {
        pDev->net->dev_addr[0] |= 0x02;   /* set local assignment bit */
@@ -1122,6 +1136,7 @@ static int GobiNetDriverBind(
 
    /* change MAC addr to include, ifacenum, and to be unique */
    pDev->net->dev_addr[ETH_ALEN-1] = pIntf->cur_altsetting->desc.bInterfaceNumber;
+#endif
 
    return 0;
 }
@@ -3932,7 +3947,11 @@ void ClearUsbNetTxStatics(struct usbnet *pDev)
    if(pDev)
    {
       #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,12,0 ))
+      #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+      struct pcpu_sw_netstats *stats64 = this_cpu_ptr(pDev->net->tstats);
+      #else
       struct pcpu_sw_netstats *stats64 = this_cpu_ptr(pDev->stats64);
+      #endif
       u64_stats_update_begin(&stats64->syncp);
       stats64->tx_packets = 0;
       stats64->tx_bytes = 0;
