@@ -575,15 +575,24 @@ static int Gobi_startup(struct usb_serial *serial)
    return 0;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+void Gobi_portremove(struct usb_serial_port *port)
+#else
 int Gobi_portremove(struct usb_serial_port *port)
+#endif
 {
    
    struct sierra_port_private *portdata = NULL;
    struct gobi_serial_intf_private *intfdata = NULL;
    u8 port_number;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,10,0 ))
+   if(unlikely(!port))
+       return;
+#else
    // Test parameters
    RETURN_ENODEV_WHEN_NULL_PTR(port);
+#endif
 
    portdata = usb_get_serial_port_data(port);
    usb_set_serial_port_data(port, NULL);
@@ -602,7 +611,9 @@ int Gobi_portremove(struct usb_serial_port *port)
       if(portdata)
       kfree(portdata);
    }
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 5,10,0 ))
    return 0;
+#endif
 }
 
 void GobiUSBSendZeroConfigMsg(struct usb_serial *serial)
