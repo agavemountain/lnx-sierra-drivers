@@ -127,6 +127,20 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <linux/netdevice.h>
 #include <net/sch_generic.h>
 #include <linux/if_arp.h>
+
+//iAutoIPAddress include
+#include <linux/inetdevice.h>
+#include <linux/net.h>
+#include <linux/route.h>
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 4,2,0 ))
+#include <linux/syscalls.h>
+#endif
+#include <linux/ipv6.h>
+#include <linux/ipv6_route.h>
+#include <net/ip_fib.h>
+#include <linux/in.h>
+#include <linux/netlink.h>
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,11,0 ))
 #include <linux/sched/signal.h>
 #endif
@@ -152,6 +166,9 @@ extern int interruptible;
 extern int iTEEnable;
 extern void *gobi_skb_push(struct sk_buff *pSKB, unsigned int len);
 const bool clientmemdebug = 0;
+extern int rt_local_priority;
+extern int rt_main_priority;
+extern int rt_default_priority;
 enum {
  eNotifyListEmpty=-1,
  eNotifyListNotFound=0,
@@ -186,6 +203,72 @@ else if(IsDeviceDisconnect(x))\
   DBG( "Device Disconnected!\n" );\
   return -ENXIO;\
 }\
+
+//iAutoIPAddress define
+#define ROUTE_TABLE_LOCAL_PRIORITY 0
+#define ROUTE_TABLE_MAIN_PRIORITY 1
+#define ROUTE_TABLE_DEFAULT_PRIORITY 32767
+#define MATRIC_OFFSET 10
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,8,0 ))
+#define ADD_ROUTE_TABLE(xNet,FIB_TABLE,FIB_TABLE_ID)\
+if(!dev_net(xNet)->ipv4.FIB_TABLE)\
+{\
+  if (!fib_new_table(dev_net(xNet), FIB_TABLE_ID))\
+   {\
+      printk(KERN_ERR"FAIL to create #FIB_TABLE_ID ROUTE %s.\n", xNet->name);\
+   }\
+}\
+else\
+{\
+   DBG("#FIB_TABLE_ID ROUTE EXIST %s.\n", xNet->name);\
+}
+#else
+#define ADD_ROUTE_TABLE(xNet,FIB_TABLE,FIB_TABLE_ID)
+#endif // KERNEL_VERSION( 4,8,0 )
+
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,6,0 )) && (LINUX_VERSION_CODE <= KERNEL_VERSION( 4,8,0 ))
+#define ADD_MAIN_AND_DEFAULT_REOUTE(xNet)\
+ADD_ROUTE_TABLE(xNet,fib_main,RT_TABLE_MAIN);\
+ADD_ROUTE_TABLE(xNet,fib_default,RT_TABLE_DEFAULT);\
+ADD_ROUTE_TABLE(xNet,fib_local,RT_TABLE_LOCAL);
+#elif (LINUX_VERSION_CODE > KERNEL_VERSION( 4,8,0 ))
+#define ADD_MAIN_AND_DEFAULT_REOUTE(xNet)\
+ADD_ROUTE_TABLE(xNet,fib_main,RT_TABLE_MAIN);\
+ADD_ROUTE_TABLE(xNet,fib_default,RT_TABLE_DEFAULT);
+#else
+#define ADD_MAIN_AND_DEFAULT_REOUTE(xNet)
+#endif
+
+#define PRINT_ALL_WDS_IDs(pdev) ({\
+   if(pDev)\
+   {\
+      int i =0 ;\
+      DBG("---WDSCID: 0x%04x\n",WDSClientID);\
+      for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)\
+      {\
+         DBG("---MUX %d WDSCID: 0x%04x\n",i,WDSClientID);\
+      }\
+   }\
+})
+
+#define PRINT_RESUME_FROM_SUSPEND(pGobiDev)\
+if(pGobiDev->bPrintResmeFromUserSpace)\
+{\
+   DBG("RESUME FROM SUSPEND\n");\
+   pGobiDev->bPrintResmeFromUserSpace = false;\
+}
+
+#define RETURN_PUT_INTERFACE(pDev,ret)\
+if( !( (pDev==NULL) || \
+       isModuleUnload(pDev) || \
+       IsDeviceDisconnect(pDev) || \
+       (pDev->mbUnload >= eStatUnloading) ) )\
+{\
+   gobi_usb_autopm_put_interface( pDev->mpIntf );\
+}\
+return ret;
 
 /* initially all zero */
 int qcqmi_table[MAX_QCQMI];
@@ -269,6 +352,7 @@ bool isFilpSignalPending(sQMIFilpStorage *pFilpData);
 void ReleaseFilpClientID(sQMIFilpStorage *pFilpData);
 void assign_filp_pointer_to_null(struct file *filp);
 bool bIsQMIInterrupt(struct urb *pIntURB);
+int SendGetRuntimesettings( sGobiUSBNet *pDev  ,u16 WDSClientID);
 
 // IOCTL to generate a client ID for this service type
 #define IOCTL_QMI_GET_SERVICE_FILE 0x8BE0 + 1
@@ -367,12 +451,6 @@ const int i = 1;
 #define in_serving_softirq()	(softirq_count() & SOFTIRQ_OFFSET)
 #endif
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,0,0 ))
-   #define gobi_dev_change_flags(dev,flags) dev_change_flags(dev, flags, NULL)
-#else
-   #define gobi_dev_change_flags(dev,flags) dev_change_flags(dev, flags)
-#endif
-
 static int gobi_qmimux_open(struct net_device *dev)
 {
    struct gobi_qmimux_priv *priv = netdev_priv(dev);
@@ -385,7 +463,7 @@ static int gobi_qmimux_open(struct net_device *dev)
       oflags = dev->flags;      
       if (gobi_dev_change_flags(real_dev, oflags | IFF_UP | IFF_RUNNING) < 0)
       {
-          printk("IP-Config: Failed to open %s\n",
+          printk(KERN_ERR "IP-Config: Failed to open %s\n",
           dev->name);
       }
       netif_carrier_on(real_dev);
@@ -435,6 +513,7 @@ static netdev_tx_t gobi_qmimux_start_xmit(struct sk_buff *skb, struct net_device
    struct gobi_qmimux_priv *priv = netdev_priv(dev);
    unsigned int len = skb->len;
    struct gobi_qmimux_hdr *hdr;
+   int iRet = 0;
 
    skb->dev = priv->real_dev;
    if(dev->type == ARPHRD_ETHER)
@@ -472,7 +551,10 @@ static netdev_tx_t gobi_qmimux_start_xmit(struct sk_buff *skb, struct net_device
    #else
    netif_trans_update(dev);
    #endif
-   return dev_queue_xmit(skb);
+
+   iRet = dev_queue_xmit(skb);
+   ClearParentTxStatics(priv->real_dev);
+   return iRet;
 }
 
 static const struct net_device_ops gobi_qmimux_netdev_ops = {
@@ -972,6 +1054,7 @@ void GobiClearDownReason(
              !test_bit(DRIVER_SUSPENDED, &pDev->mDownReason) )
    {
       netif_carrier_on( pDev->mpNetDev->net );
+      pDev->mDownReason = 0;
    }
 #endif
 }
@@ -1208,6 +1291,21 @@ void ReadCallback( struct urb * pReadURB )
                }
             }
          }
+      }
+      if(u16MsgID==QMI_CTL_PWR_CONF_RSP)
+      {
+         DBG("PWR u8Type:0x%02x, TID:0x%02x ,MSGID:0x%02x\n",
+                u8Type, transactionID,u16MsgID);
+         DBG("Clear Save Power\n");
+         #ifdef CONFIG_PM
+         SetCurrentSuspendStat(pDev,0);
+         #endif
+         #ifdef CONFIG_ANDROID
+         SetCurrentSuspendStat(pDev,0);
+         // It doesn't matter if this is autoresume or system resume
+         SetTxRxStat(pDev,RESUME_RX_OKAY);
+         SetTxRxStat(pDev,RESUME_TX_OKAY);
+         #endif
       }
    }
    if (result < 0)
@@ -1747,15 +1845,7 @@ int StartRead( sGobiUSBNet * pDev )
       return -ENXIO;
    }
    mb();
-   usb_reset_endpoint(pDev->mpNetDev->udev,0);
-   usb_reset_endpoint(pDev->mpNetDev->udev,
-      pendp->bEndpointAddress);
 
-   usb_clear_halt(pDev->mpNetDev->udev,
-      usb_rcvctrlpipe( pDev->mpNetDev->udev, 0 ));
-   usb_clear_halt(pDev->mpNetDev->udev,
-      usb_rcvintpipe( pDev->mpNetDev->udev,
-         pendp->bEndpointAddress));
    return usb_submit_urb( pDev->mQMIDev.mpIntURB, GOBI_GFP_ATOMIC );
 }
 
@@ -2429,17 +2519,17 @@ int WriteSync(
       if(isModuleUnload(pDev))
       {
          DBG( "unloaded\n" );
-         return -EFAULT;
+         RETURN_PUT_INTERFACE(pDev,-EFAULT);
       }
       if(IsDeviceDisconnect(pDev))
       {
          DBG( "Device Disconnected!\n" );
-         return -ENXIO;
+         RETURN_PUT_INTERFACE(pDev,-ENXIO);
       }
       pDev->iShutdown_read_sem= __LINE__;
       if(signal_pending(current))
       {
-         return -ERESTARTSYS;
+         RETURN_PUT_INTERFACE(pDev,-ERESTARTSYS);
       }
 
       iLockRetry = 0;
@@ -2451,22 +2541,22 @@ int WriteSync(
          if(iLockRetry++>100)
          {
             DBG("down_read_trylock timeout");
-            return -EFAULT;
+            RETURN_PUT_INTERFACE(pDev,-EFAULT);
          }
          if(pDev==NULL)
          {
             DBG( "NULL\n" );
-            return -EFAULT;
+            RETURN_PUT_INTERFACE(pDev,-EFAULT);
          }
          if (pDev->mbUnload >= eStatUnloading)
          {
             DBG( "unloaded\n" );
-            return -EFAULT;
+            RETURN_PUT_INTERFACE(pDev,-EFAULT);
          }
          if(IsDeviceDisconnect(pDev))
          {
             DBG( "Device Disconnected!\n" );
-            return -ENXIO;
+            RETURN_PUT_INTERFACE(pDev,-ENXIO);
          }
       }
       mb();
@@ -2479,22 +2569,22 @@ int WriteSync(
        up_read(&pDev->shutdown_rwsem);
        if(signal_pending(current))
        {
-          return -ERESTARTSYS;
+          RETURN_PUT_INTERFACE(pDev,-ERESTARTSYS);
        }
        if(pDev==NULL)
        {
-          return -EFAULT;
+          RETURN_PUT_INTERFACE(pDev,-EFAULT);
        }
        if (IsDeviceDisconnect(pDev) )
        {
-         return -ENXIO;
+          RETURN_PUT_INTERFACE(pDev,-ENXIO);
        }
        pDev->iShutdown_read_sem=- __LINE__;
        
        if (pDev->mbUnload >= eStatUnloading)
        {
           DBG( "unloaded\n" );
-          return -EFAULT;
+          RETURN_PUT_INTERFACE(pDev,-EFAULT);
        }
 
        if (signal_pending(current))
@@ -2519,7 +2609,7 @@ int WriteSync(
           {
             pDev->iUSBState = USB_STATE_NOTATTACHED;
           }
-          return result;
+          RETURN_PUT_INTERFACE(pDev,result);
        }
        else
        {
@@ -2528,17 +2618,17 @@ int WriteSync(
        if (IsDeviceValid( pDev ) == false)
        {
           DBG( "%s Invalid device!\n" ,__FUNCTION__);
-          return -ENXIO;
+          RETURN_PUT_INTERFACE(pDev,-ENXIO);
        }
        if(IsDeviceDisconnect(pDev))
        {
           DBG( "Device Disconnected!\n" );
-          return -ENXIO;
+          RETURN_PUT_INTERFACE(pDev,-ENXIO);
        }
        if (pDev->mbUnload > eStatUnloading)
        {
          DBG( "unloaded\n" );
-         return -EFAULT;
+         RETURN_PUT_INTERFACE(pDev,-EFAULT);
        }
    }
 
@@ -3559,7 +3649,7 @@ long UserspaceunlockedIOCTL(
    #ifdef CONFIG_PM
    if(bIsSuspend(pFilpData->mpDev))
    {
-      DBG("RESUME FROM SUSPEND\n");
+      PRINT_RESUME_FROM_SUSPEND(pFilpData->mpDev);
       gobi_usb_autopm_get_interface_async( pFilpData->mpDev->mpIntf );
       gobi_usb_autopm_put_interface_async( pFilpData->mpDev->mpIntf );
       return -EINTR;
@@ -4614,7 +4704,7 @@ ssize_t UserspaceRead(
    #ifdef CONFIG_PM
    if(bIsSuspend(pFilpData->mpDev))
    {
-      DBG("RESUME FROM SUSPEND\n");
+      PRINT_RESUME_FROM_SUSPEND(pFilpData->mpDev);
       gobi_usb_autopm_get_interface_async( pFilpData->mpDev->mpIntf );
       gobi_usb_autopm_put_interface_async( pFilpData->mpDev->mpIntf );
       return -EINTR;
@@ -4799,7 +4889,7 @@ ssize_t UserspaceWrite(
    #ifdef CONFIG_PM
    if(bIsSuspend(pFilpData->mpDev))
    {
-      DBG("RESUME FROM SUSPEND\n");
+      PRINT_RESUME_FROM_SUSPEND(pFilpData->mpDev);
       gobi_usb_autopm_get_interface_async( pFilpData->mpDev->mpIntf );
       gobi_usb_autopm_put_interface_async( pFilpData->mpDev->mpIntf );
       return -EINTR;
@@ -4823,6 +4913,8 @@ ssize_t UserspaceWrite(
                        pWriteBuffer,
                        size + QMUXHeaderSize(),
                        pFilpData->mClientID );
+
+   StayAwakeOnService(pWriteBuffer,pFilpData->mpDev);
 
    kfree( pWriteBuffer );
    if(pFilpData!=NULL)
@@ -4900,7 +4992,7 @@ unsigned int UserspacePoll(
    #ifdef CONFIG_PM
    if(bIsSuspend(pFilpData->mpDev))
    {
-      DBG("RESUME FROM SUSPEND\n");
+      PRINT_RESUME_FROM_SUSPEND(pFilpData->mpDev);
       gobi_usb_autopm_get_interface_async( pFilpData->mpDev->mpIntf );
       gobi_usb_autopm_put_interface_async( pFilpData->mpDev->mpIntf );
       return -EINTR;
@@ -5368,6 +5460,14 @@ qmi_open(struct inode *inode, struct file *file)
     return single_open(file, qmi_show, data);
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,6,0 ))
+static const struct proc_ops proc_fops = {
+   .proc_open       = qmi_open,
+   .proc_read       = seq_read,
+   .proc_lseek      = seq_lseek,
+   .proc_release    = single_release,
+};
+#else
 static const struct file_operations proc_fops = {
     .owner      = THIS_MODULE,
     .open       = qmi_open,
@@ -5375,6 +5475,7 @@ static const struct file_operations proc_fops = {
     .llseek     = seq_lseek,
     .release    = single_release,
 };
+#endif
 
 /*===========================================================================
 METHOD:
@@ -5444,6 +5545,8 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
       }
    }while(result!=0);
    atomic_set( &pDev->mQMIDev.mQMICTLTransactionID, 1 );
+
+   ResetReadEndpoints(pDev);
 
    // Start Async reading
    result = StartRead( pDev );
@@ -5608,8 +5711,8 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
    i=0;
    do
    {
-      // Setup WDS callback
-      result = SetupQMIWDSCallback( pDev , 0 );
+      // Setup WDS IPv4 callback
+      result = SetupQMIWDSCallback( pDev , 4 );
       RETURN_WHEN_DEVICE_ERR(pDev);
       if (result != 0)
       {
@@ -5619,7 +5722,21 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
          }
       }
    }while(result!=0);
-
+   i=0;
+   do
+   {
+      // Setup WDS IPv6 callback
+      result = SetupQMIWDSCallback( pDev , 6 );
+      RETURN_WHEN_DEVICE_ERR(pDev);
+      if (result != 0)
+      {
+         if(i++>MAX_RETRY)
+         {
+            printk(KERN_WARNING "Setup IPv6 WDS callback failed!\n" );\
+            break;
+         }
+      }
+   }while(result!=0);
    if (is9x15)
    {
        // Set FCC Authentication
@@ -5728,13 +5845,27 @@ int RegisterQMIDevice( sGobiUSBNet * pDev, int is9x15 )
        return -ENOMEM;
    }
 
-  if(pDev->iIPAlias==0)
+  if( (pDev->iQMUXEnable) ||
+      (pDev->u8AutoIPEnable) )
   {
       for(i=0;i<pDev->iMaxMuxID;i++)
       {
          SetupQMIWDSCallback( pDev,MUX_ID_START+i);
       }
-  }   
+  }
+  if( (pDev->bLinkState) &&
+      (pDev->u8AutoIPEnable) )
+  {
+      SendGetRuntimesettings(pDev,pDev->WDSClientID[eWDSCALLBACK_IPv4]);
+      SendGetRuntimesettings(pDev,pDev->WDSClientID[eWDSCALLBACK_IPv6]);
+      if(pDev->iQMUXEnable)
+      {
+         for(i=0;i<pDev->iMaxMuxID;i++)
+         {
+            SendGetRuntimesettings(pDev,pDev->QMUXWDSCientID[i]);
+         }
+      }
+  }  
   // Success
    return 0;
 }
@@ -6175,9 +6306,15 @@ void DeregisterQMIDevice( sGobiUSBNet * pDev )
    // Stop all reads
    KillRead( pDev );
    wait_interrupt();
-   GobiDestoryWorkQueue(pDev);   
-   if(pDev->WDSClientID!=(u16)-1)
-   ReleaseClientID( pDev, pDev->WDSClientID );
+   GobiDestoryWorkQueue(pDev);
+   for(i=0;i<eWDSCALLBACK_MAX;i++)
+   {
+      if(pDev->WDSClientID[i]!=(u16)-1)
+      {
+         ReleaseClientID( pDev, pDev->WDSClientID[i] );
+      }
+   }
+
    for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
    {
       if(pDev->QMUXWDSCientID[i] !=(u16)-1)
@@ -6636,7 +6773,7 @@ void QMIWDSCallback(
    void *             pData )
 {
    bool bRet;
-   int result;
+   int result = 0;
    void * pReadBuffer=NULL;
    u16 readBufferSize;
    u32 TXOk = (u32)-1;
@@ -6648,7 +6785,8 @@ void QMIWDSCallback(
    u64 TXBytesOk = (u64)-1;
    u64 RXBytesOk = (u64)-1;
    bool bReconfigure;
-
+   bool bOldLinkState;
+   int iMsgID = 0;
    if (IsDeviceValid( pDev ) == false)
    {
       DBG( "Invalid device\n" );
@@ -6670,12 +6808,62 @@ void QMIWDSCallback(
       pReadBuffer = NULL;
       return;
    }
-
+   bOldLinkState = pDev->bLinkState;
    // Default values
    pDev->bLinkState = ! GobiTestDownReason( pDev, NO_NDIS_CONNECTION );
    bReconfigure = false;
+   if(bOldLinkState != pDev->bLinkState) 
+   {
+      DBG("====0x%04x:%s====\n",
+          clientID,
+         (pDev->bLinkState == true) ? "connected" : "disconnected");
+   }
+   if(pDev->u8AutoIPEnable)
+   {
+      u8 offset = sizeof( sQMUX ) + 3;
+      if(readBufferSize>offset)
+      {
+         iMsgID = GetQMIMessageID( pReadBuffer+offset, readBufferSize-offset );
+         DBG("MsgID :0x%04x\n", iMsgID);
+         if(iMsgID>0)
+         {
+            if(iMsgID==QMI_WDS_SET_IP_FAMILY_MSGID)
+            {
+               result = QMIWDSSetIPFamilyResp(pDev,
+                                   pReadBuffer,
+                                   readBufferSize);
+               result = -1;
+            }
+            else if(iMsgID==QMI_WDS_GET_RUNTIMET_SETTINGS_MSGID)
+            {
+               result = QMIWDSRuntimeResp(pDev,
+                                   pReadBuffer,
+                                   readBufferSize,
+                                   clientID);
+               if(result==0)
+               {
+                  DBG("RUN TIME SETTINGS clientID :0x%04x\n", clientID);
+                  pDev->wdsNetState = eNetDev_WQ_STATE_HANDLE_RESP;
+                  pDev->wdsNetResp.ClientID =clientID;
+                  gobiProcessNetDev(pDev);
+               }
+               result = -1;
+            }
+         }
+         else
+         {
+            DBG("Fail to Get MsgID\n");
+         }
+      }      
+   }
+   else
+   {
+      result = 0;
+   }
 
-   result = QMIWDSEventResp( pReadBuffer,
+   if(result == 0)
+   {
+      result = QMIWDSEventResp( pReadBuffer,
                              readBufferSize,
                              &TXOk,
                              &RXOk,
@@ -6687,62 +6875,67 @@ void QMIWDSCallback(
                              &RXBytesOk,
                              (u8*)&pDev->bLinkState,
                              &bReconfigure );
-   if (result < 0)
-   {
-      DBG( "bad WDS packet\n" );
-   }
-   else
-   {
-      if (bReconfigure == true)
+      if (result < 0)
       {
-         DBG( "Net device link reset\n" );
-         GobiSetDownReason( pDev, NO_NDIS_CONNECTION );
-         GobiClearDownReason( pDev, NO_NDIS_CONNECTION );
+         DBG( "bad WDS packet\n" );
       }
       else
       {
-         if (pDev->bLinkState == true)
+         if (bReconfigure == true)
          {
-            DBG( "Net device link is connected\n" );
+            DBG( "Net device link reset\n" );
+            GobiSetDownReason( pDev, NO_NDIS_CONNECTION );
             GobiClearDownReason( pDev, NO_NDIS_CONNECTION );
-            #ifdef CONFIG_ANDROID
-            SetTxRxStat(pDev, RESUME_RX_OKAY | RESUME_TX_OKAY);
-            #endif
          }
          else
          {
-            DBG( "Net device link is disconnected\n" );
-            GobiSetDownReason( pDev, NO_NDIS_CONNECTION );
-            #ifdef CONFIG_ANDROID
-            SetTxRxStat(pDev, RESUME_TX_RX_DISABLE);
-            #endif
+            if (pDev->bLinkState == true)
+            {
+               DBG( "Net device link is connected\n" );
+               GobiClearDownReason( pDev, NO_NDIS_CONNECTION );
+               #ifdef CONFIG_ANDROID
+               SetTxRxStat(pDev, RESUME_RX_OKAY | RESUME_TX_OKAY);
+               #endif
+            }
+            else
+            {
+               DBG( "Net device link is disconnected\n" );
+               GobiSetDownReason( pDev, NO_NDIS_CONNECTION );
+               #ifdef CONFIG_ANDROID
+               SetTxRxStat(pDev, RESUME_TX_RX_DISABLE);
+               #endif
+            }
          }
       }
-   }
-   if(pDev->WDSClientID == clientID)
-   {
-      DBG( "clientID :0x%04x\n", clientID);
-   }
-   else
-   {
-      int i =0;
-      for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
+      if(pDev->WDSClientID[eWDSCALLBACK_IPv4] == clientID)
       {
-         if(pDev->QMUXWDSCientID[i]==clientID)
+         DBG( "clientID :0x%04x\n", clientID);
+      }
+      else if(pDev->WDSClientID[eWDSCALLBACK_IPv6] == clientID)
+      {
+         DBG( "clientID :0x%04x\n", clientID);
+      }
+      else
+      {
+         int i =0;
+         for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
          {
-            DBG( "0x%02x clientID :0x%04x %s\n",
-               i+MUX_ID_START,
-               clientID,
-               (pDev->bLinkState == true) ? "connected" : "disconnected");
-            if(pDev->iIPAlias==0)
+            if(pDev->QMUXWDSCientID[i]==clientID)
             {
-               if(pDev->bLinkState == true)
+               DBG( "0x%02x clientID :0x%04x %s\n",
+                  i+MUX_ID_START,
+                  clientID,
+                  (pDev->bLinkState == true) ? "connected" : "disconnected");
+               if(pDev->iIPAlias==0)
                {
-                  netif_carrier_on( pDev->pNetDevice[i] );
-               }
-               else
-               {
-                  netif_carrier_off( pDev->pNetDevice[i] );
+                  if(pDev->bLinkState == true)
+                  {
+                     netif_carrier_on( pDev->pNetDevice[i] );
+                  }
+                  else
+                  {
+                     netif_carrier_off( pDev->pNetDevice[i] );
+                  }
                }
             }
          }
@@ -6770,6 +6963,15 @@ void QMIWDSCallback(
       DBG( "unable to setup next async read\n" );
    }
 
+   // Fire a workqueue to send Get runtime settings request.
+   if( (pDev->bLinkState==true) &&
+      (bOldLinkState != pDev->bLinkState) &&
+      (pDev->u8AutoIPEnable) )
+   {
+      pDev->wdsNetState = eNetDev_WQ_STATE_HANDLE_REQ;
+      pDev->wdsNetReq.ClientID = clientID;
+      gobiProcessNetDev(pDev);
+   }
    return;
 }
 
@@ -6845,8 +7047,8 @@ RETURN VALUE:
 int SetupQMIWDSCallback( sGobiUSBNet * pDev  ,u8 QMUXID)
 {
    int result;
-   void * pWriteBuffer;
-   u16 writeBufferSize;
+   void * pWriteBuffer=NULL;
+   u16 writeBufferSize = 0;
    u16 WDSClientID;
    u16 tid = 1+QMUXID;
 
@@ -6857,16 +7059,52 @@ int SetupQMIWDSCallback( sGobiUSBNet * pDev  ,u8 QMUXID)
    {
       return result;
    }
-   pDev->WDSClientID = WDSClientID = result;
+   WDSClientID = result;
    if(QMUXID>=MUX_ID_START)
    {
       pDev->QMUXWDSCientID[QMUXID-MUX_ID_START] = WDSClientID = result;
       DBG( "MUXID:0x%02x, WDSClientID:0x%04x\n",QMUXID, WDSClientID);
    }
+   else if ( (QMUXID == 6) ||
+             (QMUXID == 4) )
+   {
+      u8 index = (QMUXID==6) ? eWDSCALLBACK_IPv6: eWDSCALLBACK_IPv4;
+      pDev->WDSClientID[index] = WDSClientID = result;
+      DBG("IPv%s WDSClientID:0x%04x",QMUXID==6? "6":"4",WDSClientID);
+      //Set IP family
+      writeBufferSize = QMIWDSSetIPFamilyReqSize();
+      pWriteBuffer = kmalloc( writeBufferSize, GOBI_GFP_KERNEL );
+      if (pWriteBuffer == NULL)
+      {
+         return -ENOMEM;
+      }
+      DBG("Set IPv%s",(QMUXID==6) ? "6" : "4");
+      result = QMIWDSSetIPFamilyReq( pWriteBuffer,
+                                        writeBufferSize,
+                                        tid++ ,
+                                        (QMUXID==6) ? 0x06 : 0x04);
+      if (result < 0)
+      {
+         kfree( pWriteBuffer );
+         DBG("Set IPv%s Failed %d",
+            (QMUXID==6) ? "6" : "4",
+            result);
+         return result;
+      }
+      result = WriteSync( pDev,
+                       pWriteBuffer,
+                       writeBufferSize,
+                       WDSClientID );
+      kfree( pWriteBuffer );
+      if (result < 0)
+      {
+         return result;
+      }
+   }
    else
    {
-      pDev->WDSClientID = WDSClientID = result;
-      DBG("WDSClientID:0x%04x",WDSClientID);
+      printk(KERN_ERR "%s Invalid argument\n",__FUNCTION__);
+      return -EINVAL;
    }
    // QMI WDS Set QMUX ID
    if(QMUXID>=MUX_ID_START)
@@ -7995,7 +8233,7 @@ int SetPowerSaveMode(sGobiUSBNet *pDev,u8 mode)
         DBG( "bad write data %d\n", result );
         return result;
    }
-   wait_control_msg_semaphore_timeout(&readSem, QMI_CONTROL_MAX_MSG_DELAY_MS);
+   wait_control_msg_semaphore_timeout(&readSem, QMI_CONTROL_MAX_RESUME_MSG_DELAY_MS);
    mb();
    // Enter critical section
    flags = LocalClientMemLockSpinLockIRQSave( pDev , __LINE__);
@@ -8107,12 +8345,12 @@ int WriteSyncNoResume(
       if(isModuleUnload(pDev))
       {
          DBG( "unloaded\n" );
-         return -EFAULT;
+         RETURN_PUT_INTERFACE(pDev, -EFAULT);
       }
       pDev->iShutdown_read_sem= __LINE__;
       if(signal_pending(current))
       {
-         return -ERESTARTSYS;
+         RETURN_PUT_INTERFACE(pDev, -ERESTARTSYS);
       }
 
       iLockRetry = 0;
@@ -8124,17 +8362,17 @@ int WriteSyncNoResume(
          if(iLockRetry++>100)
          {
             DBG("down_read_trylock timeout");
-            return -EFAULT;
+            RETURN_PUT_INTERFACE(pDev, -EFAULT);
          }
          if(pDev==NULL)
          {
             DBG( "NULL\n" );
-            return -EFAULT;
+            RETURN_PUT_INTERFACE(pDev, -EFAULT);
          }
          if (pDev->mbUnload >= eStatUnloading)
          {
             DBG( "unloaded\n" );
-            return -EFAULT;
+            RETURN_PUT_INTERFACE(pDev, -EFAULT);
          }
       }
       mb();
@@ -8147,15 +8385,15 @@ int WriteSyncNoResume(
        up_read(&pDev->shutdown_rwsem);
        if(signal_pending(current))
        {
-          return -ERESTARTSYS;
+          RETURN_PUT_INTERFACE(pDev, -ERESTARTSYS);
        }
        if (IsDeviceDisconnect(pDev) )
        {
-         return -ENXIO;
+          RETURN_PUT_INTERFACE(pDev, -ENXIO);
        }
        if(pDev==NULL)
        {
-          return -EFAULT;
+          RETURN_PUT_INTERFACE(pDev, -EFAULT);
        }
        
        pDev->iShutdown_read_sem=- __LINE__;
@@ -8163,12 +8401,12 @@ int WriteSyncNoResume(
        if (pDev->mbUnload >= eStatUnloading)
        {
           DBG( "unloaded\n" );
-          return -EFAULT;
+          RETURN_PUT_INTERFACE(pDev, -EFAULT);
        }
 
        if (signal_pending(current))
        {
-           return -ERESTARTSYS;
+           RETURN_PUT_INTERFACE(pDev,-ERESTARTSYS);
        }
 
        if (result < 0)
@@ -8188,7 +8426,7 @@ int WriteSyncNoResume(
           {
             pDev->iUSBState = USB_STATE_NOTATTACHED;
           }
-           return result;
+           RETURN_PUT_INTERFACE(pDev, result);
        }
        else
        {
@@ -8197,12 +8435,12 @@ int WriteSyncNoResume(
        if (IsDeviceValid( pDev ) == false)
        {
           DBG( "%s Invalid device!\n" ,__FUNCTION__);
-          return -ENXIO;
+          RETURN_PUT_INTERFACE(pDev, -ENXIO);
        }
        if (pDev->mbUnload > eStatUnloading)
        {
          DBG( "unloaded\n" );
-         return -EFAULT;
+         RETURN_PUT_INTERFACE(pDev,-EFAULT);
        }
    }
 
@@ -8457,17 +8695,17 @@ int WriteSyncNoRetry(
      if(iLockRetry++>100)
      {
         DBG("down_read_trylock timeout");
-        return -EFAULT;
+         RETURN_PUT_INTERFACE(pDev, -EFAULT);
      }
      if(pDev==NULL)
      {
         DBG( "NULL\n" );
-        return -EFAULT;
+         RETURN_PUT_INTERFACE(pDev, -EFAULT);
      }
      if (pDev->mbUnload >= eStatUnloading)
      {
         DBG( "unloaded\n" );
-        return -EFAULT;
+         RETURN_PUT_INTERFACE(pDev, -EFAULT);
      }
   }
   mb();
@@ -8480,15 +8718,15 @@ int WriteSyncNoRetry(
    up_read(&pDev->shutdown_rwsem);
    if(signal_pending(current))
    {
-      return -ERESTARTSYS;
+       RETURN_PUT_INTERFACE(pDev, -ERESTARTSYS);
    }
    if (IsDeviceDisconnect(pDev) )
    {
-      return -ENXIO;
+       RETURN_PUT_INTERFACE(pDev,-ENXIO);
    }
    if(pDev==NULL)
    {
-      return -EFAULT;
+       RETURN_PUT_INTERFACE(pDev, -EFAULT);
    }
    
    pDev->iShutdown_read_sem=- __LINE__;
@@ -8496,7 +8734,7 @@ int WriteSyncNoRetry(
    if (pDev->mbUnload >= eStatUnloading)
    {
       DBG( "unloaded\n" );
-      return -EFAULT;
+       RETURN_PUT_INTERFACE(pDev, -EFAULT);
    }
    if (result < 0)
    {
@@ -9298,6 +9536,30 @@ int GobiInitWorkQueue(sGobiUSBNet *pGobiDev)
       return -1;
    }
    #endif
+   if(pGobiDev->u8AutoIPEnable)
+   {
+      memset(&szProcessName,0,sizeof(szProcessName));
+      if(GenerateProcessName("gobinetcb",&szProcessName[0],MAX_WQ_PROC_NAME_SIZE-1,pGobiDev)!=0)
+      {
+         return -1;
+      }
+      pGobiDev->wqNetDev = create_workqueue(szProcessName);
+      if (!pGobiDev->wqNetDev)
+      {
+         printk("Create Work Queue wqNetDev Failed\n");
+         return -1;
+      }
+   }
+   if(GenerateProcessName("gobisetpower",&szProcessName[0],MAX_WQ_PROC_NAME_SIZE-1,pGobiDev)!=0)
+   {
+      return -1;
+   }
+   pGobiDev->wqSetPowerSaveMode = create_workqueue(szProcessName);
+   if (!pGobiDev->wqSetPowerSaveMode)
+   {
+      printk("Create Work Queue SetPowerSaveMode Failed\n");
+      return -1;
+   }
    return 0;
 }
 
@@ -9332,7 +9594,8 @@ void GobiDestoryWorkQueue(sGobiUSBNet *pGobiDev)
    #endif
    ClearPrivateWorkQueuesProcessByTableIndex(tableindex,
                   interfaceindex);
-   
+   GobiCancelwqNetDevWorkQueue(pGobiDev);
+   GobiCancelSetPowerSaveModeWorkQueue(pGobiDev);
 }
 
 /*===========================================================================
@@ -9793,11 +10056,21 @@ RETURN VALUE:
 ===========================================================================*/
 void gobiUnLockSystemSleep(sGobiUSBNet *pGobiDev)
 {
+extern int wakelock_timeout;
+   unsigned long delay = DELAY_MS_DEFAULT;
    WLDEBUG( "gobiUnLockSystemSleep\n");
    GobiCancelUnLockSystemSleepWorkQueue(pGobiDev);
    INIT_DELAYED_WORK(&pGobiDev->dwUnLockSystemSleep,
             ProcessUnLockSystemSleepFunction);
-   queue_delayed_work(pGobiDev->wqUnLockSystemSleep, &pGobiDev->dwUnLockSystemSleep, DELAY_MS_DEFAULT);
+   if(wakelock_timeout<0)
+   {
+      delay = DELAY_MS_DEFAULT;
+   }
+   else
+   {
+      delay = round_jiffies_relative(wakelock_timeout*HZ);
+   }
+   queue_delayed_work(pGobiDev->wqUnLockSystemSleep, &pGobiDev->dwUnLockSystemSleep, delay);
 }
 #endif
 
@@ -10379,13 +10652,11 @@ void GobiCancelDelayWorkWorkQueueWithoutUSBLockDevice(
       (wq != NULL) && 
       (dw != NULL) )
    {
-      struct usb_device *dev = NULL;
       unsigned int flag = 0;
       if( pGobiDev->mUsb_Interface == NULL )
       {
          return ;
       }
-      dev = interface_to_usbdev(pGobiDev->mUsb_Interface);
       flag = gobi_work_busy(dw);
       if(flag)
       {
@@ -10728,5 +10999,1736 @@ bool bIsQMIInterrupt(struct urb *pURB)
       return true;
    }
    return false;
+}
+
+/*===========================================================================
+SendGetRuntimesettings
+
+   SendGetRuntimesettings (Private Method)
+
+DESCRIPTION:
+   Send WDS get runtime settings request.
+
+PARAMETERS:
+   pDev          [ I ] - pointer to sGobiUSBNet.
+   WDSClientID   [ I ] - WDS ClientID.
+RETURN VALUE:
+   0 - Success.
+   negative - When error occour.
+===========================================================================*/
+int SendGetRuntimesettings( sGobiUSBNet *pDev  ,u16 WDSClientID)
+{
+   int result = 0;
+   void * pWriteBuffer = NULL;
+   u16 writeBufferSize = 0;
+   static u16 tid = 0x80;
+   DBG("\n");
+   if(!pDev)
+   {
+      return -ENODEV;
+   }
+   if(!pDev->u8AutoIPEnable)
+   {
+      return -ENODEV;
+   }
+   if(WDSClientID==(u16)-1)
+   {
+      return -EINVAL;
+   }
+   if(!pDev->mQMIDev.proc_file)
+   {
+      DBG("QMI NOT READY 0x%04x!\n",WDSClientID);
+      return -ENODEV;
+   }
+   //Request IPv6 Runtimesettings
+   writeBufferSize = QMIWDSSetIPFamilyReqSize();
+   pWriteBuffer = kmalloc( writeBufferSize, GOBI_GFP_KERNEL );
+   if (pWriteBuffer == NULL)
+   {
+      return -ENOMEM;
+   }
+
+   DBG("Set IPv6");
+   result = QMIWDSSetIPFamilyReq( pWriteBuffer,
+                                     writeBufferSize,
+                                     tid++ ,
+                                     0x06);
+   if (result < 0)
+   {
+      kfree( pWriteBuffer );
+      return result;
+   }
+
+   result = WriteSync( pDev,
+                       pWriteBuffer,
+                       writeBufferSize,
+                       WDSClientID );
+   kfree( pWriteBuffer );
+
+   if (result < 0)
+   {
+      return result;
+   }
+   // QMI WDS Get runtime settings
+   writeBufferSize = QMIWDSGetRuntimeSettingsReqSize();
+   pWriteBuffer = kmalloc( writeBufferSize, GOBI_GFP_KERNEL );
+   if (pWriteBuffer == NULL)
+   {
+      return -ENOMEM;
+   }
+
+   result = QMIWDSGetRuntimeSettingsReq( pWriteBuffer,
+                                       writeBufferSize,
+                                       tid++ );
+   if (result < 0)
+   {
+      kfree( pWriteBuffer );
+      return result;
+   }
+
+   result = WriteSync( pDev,
+                       pWriteBuffer,
+                       writeBufferSize,
+                       WDSClientID );
+   kfree( pWriteBuffer );
+
+
+   // Set IP Family
+   writeBufferSize = QMIWDSSetIPFamilyReqSize();
+   pWriteBuffer = kmalloc( writeBufferSize, GOBI_GFP_KERNEL );
+   if (pWriteBuffer == NULL)
+   {
+      return -ENOMEM;
+   }
+   
+   //Request IPv4 Runtimesettings
+   DBG("Set IPv4");
+   result = QMIWDSSetIPFamilyReq( pWriteBuffer,
+                                     writeBufferSize,
+                                     tid++ ,
+                                     0x04);
+   if (result < 0)
+   {
+      kfree( pWriteBuffer );
+      return result;
+   }
+
+   result = WriteSync( pDev,
+                       pWriteBuffer,
+                       writeBufferSize,
+                       WDSClientID );
+   kfree( pWriteBuffer );
+
+   if (result < 0)
+   {
+      return result;
+   }
+
+   // QMI WDS Get runtime settings
+   writeBufferSize = QMIWDSGetRuntimeSettingsReqSize();
+   pWriteBuffer = kmalloc( writeBufferSize, GOBI_GFP_KERNEL );
+   if (pWriteBuffer == NULL)
+   {
+      return -ENOMEM;
+   }
+
+   result = QMIWDSGetRuntimeSettingsReq( pWriteBuffer,
+                                       writeBufferSize,
+                                       tid++ );
+   if (result < 0)
+   {
+      kfree( pWriteBuffer );
+      return result;
+   }
+
+   result = WriteSync( pDev,
+                       pWriteBuffer,
+                       writeBufferSize,
+                       WDSClientID );
+   kfree( pWriteBuffer );
+   return result;
+}
+
+/*===========================================================================
+gobi_activate_net
+
+   gobi_activate_net (Private Method)
+
+DESCRIPTION:
+   Add UP and RUNNING FLAGS to netdev.
+
+PARAMETERS:
+   net          [ I ] - pointer to net_device.
+RETURN VALUE:
+   0 - Success.
+   negative - When error occour.
+===========================================================================*/
+int gobi_activate_net(struct net_device *net)
+{
+   extern int gobi_rtnl_trylock(void);
+   if (!gobi_rtnl_trylock())
+   {
+      printk(KERN_INFO "!gobi_rtnl_trylock\n");
+      return -1;
+   }
+   if (!(net->flags & (IFF_UP|IFF_RUNNING)))
+   {
+      unsigned short oflags ;
+      oflags = net->flags;
+      if (gobi_dev_change_flags(net,
+         oflags | IFF_UP | IFF_RUNNING) < 0)
+      {
+          printk("IP-Config: Failed to open %s\n",
+          net->name);
+      }
+      else
+      {
+         printk(KERN_ERR"UP %s\n",
+          net->name);
+         netif_carrier_on(net);
+         netif_start_queue(net);
+         #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,0,0 ))
+         DBG("dev_activate\n");
+         dev_activate(net);
+         #endif
+         netdev_state_change(net);
+      }
+   }
+   rtnl_unlock();
+   return 0;
+}
+
+/*===========================================================================
+ExtractMTU
+
+   ExtractMTU (Private Method)
+
+DESCRIPTION:
+   Parse the QMI WDS Get runtime settings Resp TLV MTU
+
+PARAMETERS:
+   net          [ I ] - pointer to net_device.
+   pBuffer      [ I ] - QMI Message buffer pointer.
+   buffSize     [ I ] - QMI Message buffer length.
+RETURN VALUE:
+   Nil.
+===========================================================================*/
+void ExtractMTU(sGobiUSBNet *pDev,void *pBuffer,u16 buffSize)
+{
+   u32 *pData = NULL;
+   u32 u32Data = 0;
+   if(!u32Data)
+      return;
+   if(!pDev)
+      return;
+   if(!pDev->u8AutoIPEnable)
+      return ;
+   pData = &u32Data;
+   if(GetTLV( pBuffer, buffSize, 0x29, (void*)pData, 4 )==4)
+   {
+      put_unaligned( le32_to_cpu(*pData), pData);
+      pDev->wdsNetResp.mtu = (uint32_t)u32Data;
+      DBG("MTU: %d",u32Data);
+   }
+}
+
+/*===========================================================================
+gobi_sock_alloc_file
+
+   gobi_sock_alloc_file (Private Method)
+
+DESCRIPTION:
+   Alloc socket file from socket
+
+PARAMETERS:
+   sock         [ I ] - pointer to socket.
+   fd           [ O ] - file descriptor number.
+RETURN VALUE:
+   file pointer - Success.
+   NULL - When error occour.
+===========================================================================*/
+struct file *gobi_sock_alloc_file(
+   struct socket *sock,
+   int *fd)
+{
+   struct file *sock_filp = NULL;
+   if(!sock)
+      return NULL;
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,7,0 ))
+   sock_filp = sock_alloc_file(sock, 0, NULL);
+   if(!sock_filp)
+      return NULL;
+   #else
+   if(!fd)
+      return NULL;
+   *fd = sock_map_fd(sock, 0);
+   if (*fd < 0)
+   {
+      printk(KERN_ERR"sock_map_fd:%d\n",*fd);
+      return NULL;
+   }
+   sock_filp = sock->file;
+   #endif
+   return sock_filp;
+}
+
+/*===========================================================================
+gobi_sock_ioctl
+
+   gobi_sock_ioctl (Private Method)
+
+DESCRIPTION:
+   Allocate socket file from socket
+
+PARAMETERS:
+   u16IPFamilfy [ I ] - IP Faily.
+   net          [ I ] - net pointer.
+   cmd          [ I ] - command
+   arg          [ I ] - argument
+   
+RETURN VALUE:
+   0 - Success.
+   non zero - When error occour.
+===========================================================================*/
+int gobi_sock_ioctl(u16 u16IPFamilfy, struct net_device *net, int cmd, unsigned long arg)
+{
+   struct socket  *sock;
+   int rc;
+   int fd = -1;
+
+   struct file    *sock_filp;
+   if(!net)
+   {
+      printk(KERN_ERR"ERROR no net_device socket\n");
+      return -ENODEV;
+   }
+   if(!dev_net(net))
+   {
+      printk(KERN_ERR"ERROR no dev_net socket\n");
+      return -ENODEV;
+   }
+   #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,2,0 ))
+   rc = sock_create_kern(dev_net(net),u16IPFamilfy, SOCK_STREAM, 0, &sock);
+   #else
+   rc = sock_create_kern(u16IPFamilfy, SOCK_STREAM, 0, &sock);
+   #endif
+   if (rc < 0)
+   {
+      printk(KERN_ERR"sock_create_kern:%d\n",rc);
+      return -ENODEV;      
+   }
+   sock_filp = gobi_sock_alloc_file(sock, &fd);
+   if(!sock_filp)
+   {
+      return -ENODEV;
+   }
+   if (IS_ERR(sock_filp))
+   {
+      #if (LINUX_VERSION_CODE < KERNEL_VERSION( 4,2,0 ))
+      if(fd>=0)
+      {
+         sys_close(fd);
+         fd = -1;
+      }
+      #endif
+      sock_release(sock);
+      rc = PTR_ERR(sock_filp);
+   }
+   else
+   {
+      if(sock_filp->f_op)
+      {
+         if (sock_filp->f_op->unlocked_ioctl)
+         {
+            rc = sock_filp->f_op->unlocked_ioctl(sock_filp, cmd, arg);
+         }
+         else
+         {
+            printk(KERN_ERR"sock_filp unlocked_ioctl\n");
+            rc = -ENODEV;
+         }
+      }
+      else
+      {
+         printk(KERN_ERR"sock_filp f_op\n");
+         rc = -ENODEV;
+      }
+      #if (LINUX_VERSION_CODE < KERNEL_VERSION( 4,2,0 ))
+      if(fd>=0)
+      {
+         sys_close(fd);
+         fd = -1;
+      }
+      #endif
+      fput(sock_filp);
+   }
+
+   return rc;
+}
+
+/*===========================================================================
+iGetAdaptorName
+
+   iGetAdaptorName (Private Method)
+
+DESCRIPTION:
+   Get WDS Client ID correspoing adaptor Name.
+
+PARAMETERS:
+   pDev              [ I ] - Pointer to sGobiUSBNet.
+   ClientID          [ I ] - WDS Client ID.
+   pAdaptorName      [ O ] - adaptor Name.
+   
+RETURN VALUE:
+   0 - Success.
+   non zero - When error occour.
+===========================================================================*/
+int iGetAdaptorName(
+   sGobiUSBNet *pDev,
+   u16 ClientID,
+   char *pAdaptorName)
+{
+   if(!pDev)
+      return -EFAULT;
+   if(!pAdaptorName)
+      return -EFAULT;
+
+   if(ClientID == pDev->WDSClientID[eWDSCALLBACK_IPv4])
+   {
+      strncpy(pAdaptorName,pDev->mpNetDev->net->name,IFNAMSIZ);
+      DBG("CID WDSClientID FOUND:0x%04x %s\n",ClientID,pAdaptorName);
+      return 0;
+   }
+   if(ClientID == pDev->WDSClientID[eWDSCALLBACK_IPv6])
+   {
+      strncpy(pAdaptorName,pDev->mpNetDev->net->name,IFNAMSIZ);
+      DBG("CID WDSClientID FOUND:0x%04x %s\n",ClientID,pAdaptorName);
+      return 0;
+   }
+   if(pDev->iQMUXEnable)
+   {
+      int index=0;
+      for(index=0;index<pDev->iMaxMuxID;index++)
+      {
+         if(pDev->QMUXWDSCientID[index] == ClientID)
+         {
+            if(pDev->iIPAlias==0)
+            {
+               if(!pDev->pNetDevice)
+               {
+                  return -EFAULT;
+               }
+               strncpy(pAdaptorName,pDev->pNetDevice[index]->name,IFNAMSIZ);
+               DBG("CID Virutal FOUND:0x%04x %s\n",ClientID,pAdaptorName);
+               return 0;
+            }
+            else
+            {
+               if(index==0)
+               {
+                  strncpy(pAdaptorName,pDev->mpNetDev->net->name,IFNAMSIZ);
+               }
+               else
+               {
+                  snprintf(pAdaptorName,IFNAMSIZ,"%s:%d",
+                     pDev->pNetDevice[index]->name,
+                     index-1);
+                  DBG("CID Alias FOUND:0x%04x %s\n",ClientID,pAdaptorName);
+                  return 0;
+               }
+            }
+         }
+      }
+   }
+   strncpy(pAdaptorName,pDev->mpNetDev->net->name,IFNAMSIZ);
+   printk(KERN_ERR "CID NOT FOUND:0x%04x %s\n",ClientID,pAdaptorName);
+   return 0;
+}
+
+/*===========================================================================
+GetAdaptorByClientID
+
+   GetAdaptorByClientID (Private Method)
+
+DESCRIPTION:
+   Get WDS Client ID correspoing net_device
+
+PARAMETERS:
+   pDev              [ I ] - Pointer to sGobiUSBNet.
+   ClientID          [ I ] - WDS Client ID.
+   
+RETURN VALUE:
+   net_device pointer - Success.
+   NULL - When error occour.
+===========================================================================*/
+struct net_device* GetAdaptorByClientID(
+   sGobiUSBNet *pDev,
+   u16 ClientID)
+{
+   if(!pDev)
+      return NULL;
+   if(!pDev->u8AutoIPEnable)
+   {
+      return NULL;
+   }
+
+   if(ClientID == pDev->WDSClientID[eWDSCALLBACK_IPv4])
+   {
+      return pDev->mpNetDev->net;
+   }
+   if(ClientID == pDev->WDSClientID[eWDSCALLBACK_IPv6])
+   {
+      return pDev->mpNetDev->net;
+   }
+   if(pDev->iQMUXEnable)
+   {
+      int index=0;
+      for(index=0;index<pDev->iMaxMuxID;index++)
+      {
+         if(pDev->QMUXWDSCientID[index] == ClientID)
+         {
+            if(pDev->iIPAlias==0)
+            {
+               if(!pDev->pNetDevice)
+               {
+                  return NULL;
+               }
+               printk(KERN_ERR "CID Virutal FOUND:0x%04x %s\n",
+                  ClientID,
+                  pDev->pNetDevice[index]->name);
+               return pDev->pNetDevice[index];
+            }
+         }
+      }
+   }   
+   return pDev->mpNetDev->net;
+}
+
+/*===========================================================================
+UpdateIPv4Table
+
+   UpdateIPv4Table (Private Method)
+
+DESCRIPTION:
+   Update QMUX IPv4 loopup table.
+
+PARAMETERS:
+   pDev              [ I ] - Pointer to sGobiUSBNet.
+   ClientID          [ I ] - WDS Client ID.
+   u32Address        [ I ] - IPv4 Address.
+   
+RETURN VALUE:
+   NILL
+===========================================================================*/
+void UpdateIPv4Table(
+   sGobiUSBNet *pDev,
+   u16 ClientID,
+   uint32_t u32Address)
+{
+   if(!pDev)
+   {
+      return ;
+   }
+   if(!pDev->u8AutoIPEnable)
+   {
+      return ;
+   }
+
+   if(pDev->WDSClientID[eWDSCALLBACK_IPv4] == ClientID)
+   {
+      pDev->qMuxAutoIP.instance = 0;
+      pDev->qMuxAutoIP.ipAddress = ntohl(u32Address);
+      DBG("%s WDSClientID:0x%04x\n",__FUNCTION__,ClientID);
+   }
+   else
+   {
+      u8 index = 0;
+      if(pDev->iIPAlias==0)
+      {
+         return ;
+      }
+      for(index=0;index<pDev->iMaxMuxID;index++)
+      {
+         if(pDev->QMUXWDSCientID[index] == ClientID)
+         {
+            pDev->qMuxIPTable[index].instance = index;
+            pDev->qMuxIPTable[index].ipAddress = ntohl(u32Address);
+            DBG("%s MUX:%d WDSCID:0x%04x\n",
+               __FUNCTION__,
+               index,
+               ClientID);
+            break;
+         }
+      }
+   }
+}
+
+/*===========================================================================
+UpdateIPv6Table
+
+   UpdateIPv6Table (Private Method)
+
+DESCRIPTION:
+   Update QMUX IPv6 loopup table.
+
+PARAMETERS:
+   pDev              [ I ] - Pointer to sGobiUSBNet.
+   ClientID          [ I ] - WDS Client ID.
+   IPv6Address       [ I ] - ipv6_addr.
+   
+RETURN VALUE:
+   NILL
+===========================================================================*/
+void UpdateIPv6Table(
+   sGobiUSBNet *pDev,
+   u16 ClientID,
+   ipv6_addr IPv6Address)
+{
+   if(!pDev)
+   {
+      return ;
+   }
+   if(!pDev->u8AutoIPEnable)
+   {
+      return ;
+   }
+
+   if(pDev->WDSClientID[eWDSCALLBACK_IPv6] == ClientID)
+   {
+      pDev->qMuxAutoIP.instance = 0;
+      memcpy(&pDev->qMuxAutoIP.ipV6Address.ipv6addr[0],
+         &IPv6Address.ipv6addr[0],
+         IPV6_ADDR_SIZE_OF_U8_LENGTH);
+      pDev->qMuxAutoIP.ipV6Address.prefix= IPv6Address.prefix;
+      DBG("%s WDSClientID:0x%04x\n",__FUNCTION__,ClientID);
+   }
+   else
+   {
+      u8 index = 0;
+      if(pDev->iIPAlias==0)
+      {
+         return ;
+      }
+      for(index=0;index<pDev->iMaxMuxID;index++)
+      {
+         if(pDev->QMUXWDSCientID[index] == ClientID)
+         {
+            pDev->qMuxIPTable[index].instance = index;
+            pDev->qMuxIPTable[index].ipV6Address = IPv6Address;
+            memcpy(&pDev->qMuxIPTable[index].ipV6Address.ipv6addr[0],
+               &IPv6Address.ipv6addr[0],
+               IPV6_ADDR_SIZE_OF_U8_LENGTH);
+            pDev->qMuxIPTable[index].ipV6Address.prefix= IPv6Address.prefix;
+            DBG("%s MUX:%d WDSCID:0x%04x\n",
+               __FUNCTION__,
+               index,
+               ClientID);
+            break;
+         }
+      }
+   }
+}
+
+/*===========================================================================
+gobi_fib_rule_nl_size
+
+   gobi_fib_rule_nl_size (Private Method)
+
+DESCRIPTION:
+   Get FIB rule request size
+
+PARAMETERS:
+   NIL
+   
+RETURN VALUE:
+   size of FIB rule request size
+===========================================================================*/
+inline size_t gobi_fib_rule_nl_size(void)
+{
+   size_t sz;
+   sz  = NLMSG_ALIGN(sizeof(struct fib_rule_hdr));
+   sz += nla_total_size(sizeof(u32));   /* FRA_PRIORITY */
+   return sz;
+}
+
+/*===========================================================================
+gobi_fib_rule
+
+   gobi_fib_rule (Private Method)
+
+DESCRIPTION:
+   Send FIB new or delete rule net_device.
+
+PARAMETERS:
+   dev              [ I ] - Pointer to net_device.
+   family           [ I ] - IP Family.
+   add_it           [ I ] - add or delete rule.
+   priority         [ I ] - Rule Priority.
+RETURN VALUE:
+   0 - Success.
+   negative - When error occour.
+===========================================================================*/
+int gobi_fib_rule(struct net_device *dev, __u8 family, bool add_it,u32 priority)
+{
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,8,0 ))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 4,12,0 ))
+#define gobi_fib_nl_newrule(skb, nlh, extack)\
+   fib_nl_newrule(skb, nlh, extack)
+#define gobi_fib_nl_delrule(skb, nlh, extack)\
+   fib_nl_delrule(skb, nlh, extack)
+#else
+#define gobi_fib_nl_newrule(skb, nlh, extack)\
+   fib_nl_newrule(skb, nlh)
+#define gobi_fib_nl_delrule(skb, nlh, extack)\
+   fib_nl_delrule(skb, nlh)
+#endif
+   struct fib_rule_hdr *frh;
+   struct nlmsghdr *nlh;
+   struct sk_buff *skb;
+   int err;
+   u32 rpriority = priority;
+   if (family != AF_INET)
+      return 0;
+
+   skb = nlmsg_new(gobi_fib_rule_nl_size(), GFP_KERNEL);
+   if (!skb)
+      return -ENOMEM;
+
+   nlh = nlmsg_put(skb, 0, 0, 0, sizeof(*frh), 0);
+   if (!nlh)
+      goto gobi_nla_put_failure;
+
+   /* rule only needs to appear once */
+   nlh->nlmsg_flags |= NLM_F_EXCL;
+
+   frh = nlmsg_data(nlh);
+   memset(frh, 0, sizeof(*frh));
+   frh->family = family;
+   frh->action = NLM_F_REQUEST |  FR_ACT_TO_TBL;
+   if(priority==ROUTE_TABLE_LOCAL_PRIORITY)
+   {
+      frh->table = RT_TABLE_LOCAL;
+      rpriority = (rt_local_priority == USE_DEFAULT_RT_PRIORITY) ? 
+                    ROUTE_TABLE_LOCAL_PRIORITY : 
+                    rt_local_priority;
+   }
+   else if(priority==ROUTE_TABLE_MAIN_PRIORITY)
+   {
+      frh->table = RT_TABLE_MAIN;
+      rpriority = (rt_main_priority == USE_DEFAULT_RT_PRIORITY) ? 
+                    ROUTE_TABLE_MAIN_PRIORITY : 
+                    rt_main_priority;
+   }
+   else if(priority==ROUTE_TABLE_DEFAULT_PRIORITY)
+   {
+      frh->table = RT_TABLE_DEFAULT;
+      rpriority = (rt_default_priority == USE_DEFAULT_RT_PRIORITY) ? 
+                    ROUTE_TABLE_DEFAULT_PRIORITY : 
+                    rt_default_priority;
+   }
+
+   if (nla_put_u32(skb, FRA_PRIORITY, rpriority))
+      goto gobi_nla_put_failure;
+
+   nlmsg_end(skb, nlh);
+
+   skb->sk = dev_net(dev)->rtnl;
+   if (add_it) {
+      err = gobi_fib_nl_newrule(skb, nlh, NULL);
+      if (err == -EEXIST)
+         err = 0;
+   } else {
+      err = gobi_fib_nl_delrule(skb, nlh, NULL);
+      if (err == -ENOENT)
+         err = 0;
+   }
+   nlmsg_free(skb);
+
+   return err;
+
+gobi_nla_put_failure:
+   nlmsg_free(skb);
+
+   return -EMSGSIZE;
+#else
+   switch(priority)
+   {
+      case ROUTE_TABLE_LOCAL_PRIORITY:
+         printk(KERN_INFO "ip rule add from all lookup local priority %d\n",priority);
+         return 0;
+      case ROUTE_TABLE_MAIN_PRIORITY:
+         printk(KERN_INFO "ip rule add from all lookup main priority %d\n",priority);
+         return 0;
+      case ROUTE_TABLE_DEFAULT_PRIORITY:
+         printk(KERN_INFO "ip rule add from all lookup default priority %d\n",priority);
+         return 0;
+      default:
+         break;
+   }   
+   return -EMSGSIZE;
+#endif
+}
+
+/*===========================================================================
+SetNetDevIPv4
+
+   SetNetDevIPv4 (Private Method)
+
+DESCRIPTION:
+   Set sGobiUSBNet IPv4 Address to net device.
+
+PARAMETERS:
+   pDev             [ I ] - Pointer to sGobiUSBNet.
+
+RETURN VALUE:
+   Nil
+===========================================================================*/
+void SetNetDevIPv4(sGobiUSBNet *pDev)
+{
+   u16 ClientID = 0;
+   union
+   {
+      uint32_t obj;
+      uint8_t  bytes[RUNTIME_SETTING_IPV4_TLV_SIZE];
+   } IPv4s;
+   int rc = 0;
+   struct ifreq   ifr;
+   __u32   val;
+   struct sockaddr_in *pdst, *pgw, *pmask;
+   struct rtentry route;
+   char szName[IFNAMSIZ]={0};
+   struct net_device *pNet = NULL;
+   struct net_device *lo = NULL;
+   if(!pDev)
+   {
+      return;
+   }
+   if(!pDev->u8AutoIPEnable)
+   {
+      return;
+   }
+   ClientID = pDev->wdsNetResp.ClientID;
+   memset(szName,0,IFNAMSIZ);
+   strncpy(szName, pDev->mpNetDev->net->name,IFNAMSIZ);
+   if(iGetAdaptorName(pDev,ClientID,&szName[0])!=0)
+   {
+      return ;
+   }
+   if( (pDev->wdsNetResp.type!=0) &&
+       (pDev->wdsNetResp.type!=3) )
+   {
+      printk(KERN_ERR"NOT IPv4: %d\n",pDev->wdsNetResp.type);
+      return ;
+   }
+
+   gobi_activate_net(pDev->mpNetDev->net);
+   pNet = GetAdaptorByClientID(pDev,ClientID);
+   if(pNet)
+   {
+      gobi_activate_net(pNet);
+   }
+   else
+   {
+      printk(KERN_ERR"Cannot found Adaptor\n");
+      return ;
+   }
+
+   //Get MTU
+   strncpy(ifr.ifr_name, szName,IFNAMSIZ);
+   ifr.ifr_addr.sa_family = AF_INET;
+   rc = gobi_sock_ioctl(PF_INET,pNet,SIOCGIFMTU, (unsigned long)&ifr);
+   if(rc==0)
+   {
+      DBG("%s mtu: %d\n",ifr.ifr_name,ifr.ifr_mtu);
+   }
+   //////////////////////////////////////////////////////////
+   //Get Ifindex
+   strncpy(ifr.ifr_name, szName,IFNAMSIZ);
+   ifr.ifr_addr.sa_family = AF_INET;
+   rc = gobi_sock_ioctl(PF_INET,pNet, SIOCGIFINDEX, (unsigned long)&ifr);
+   if(rc==0)
+   {
+      DBG("%s ifr_ifindex: %d\n",ifr.ifr_name,ifr.ifr_ifindex);
+   }
+   ////////////////////////////////////////////////////////////
+   //Set IP ADDR
+   strncpy(ifr.ifr_name, szName,IFNAMSIZ);
+   ifr.ifr_addr.sa_family = AF_INET;
+   ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr = pDev->wdsNetResp.IPInfo[eRUNTIME_SETTING_IPv4ADDR];
+   UpdateIPv4Table(pDev,ClientID,
+      pDev->wdsNetResp.IPInfo[eRUNTIME_SETTING_IPv4ADDR]);
+   rc = gobi_sock_ioctl(PF_INET,pNet,SIOCSIFADDR, (unsigned long)&ifr);
+   if(rc!=0)
+   {
+      printk(KERN_ERR"IOCTL Set IP Failed:%d.\n",rc);
+   }
+   //Set IP MASK
+   strncpy(ifr.ifr_name, szName,IFNAMSIZ);
+   ifr.ifr_addr.sa_family = AF_INET;
+
+   ((struct sockaddr_in *)&ifr.ifr_netmask)->sin_addr.s_addr = pDev->wdsNetResp.IPInfo[eRUNTIME_SETTING_IPv4NetMask];
+   rc = gobi_sock_ioctl(PF_INET,pNet,SIOCSIFNETMASK, (unsigned long)&ifr);
+   if(rc!=0)
+   {
+      printk(KERN_ERR"IOCTL Set NETMASK Failed:%d.\n",rc);
+   }
+   //Update MTU
+   if(pDev->wdsNetResp.mtu!=0)
+   {
+      strncpy(ifr.ifr_name, szName,IFNAMSIZ);
+      ifr.ifr_addr.sa_family = AF_INET;
+      ifr.ifr_mtu = pDev->wdsNetResp.mtu;
+      //Set MTU
+      rc = gobi_sock_ioctl(PF_INET,pNet,SIOCSIFMTU, (unsigned long)&ifr);
+      if(rc!=0)
+      {
+         printk(KERN_ERR"IOCTL Set MTU Failed:%d.\n",rc);
+      }
+   }
+
+   //Update Route table
+
+   //Remove Route
+   memset(&route, 0, sizeof(route));
+   pdst = (struct sockaddr_in *)(&(route.rt_dst));
+   pgw = (struct sockaddr_in *)(&(route.rt_gateway));
+   pmask = (struct sockaddr_in *)(&(route.rt_genmask));
+
+   /* Make sure we're talking about IP here */
+   pdst->sin_family = AF_INET;
+   pgw->sin_family = AF_INET;
+   pmask->sin_family = AF_INET;
+
+   /* Set up the data for removing the default route */
+   pdst->sin_addr.s_addr = 0;
+   pgw->sin_addr.s_addr = 0;
+   pmask->sin_addr.s_addr = 0;
+   route.rt_flags = RTF_UP | RTF_GATEWAY;
+
+   rc = gobi_sock_ioctl(PF_INET,pNet,SIOCDELRT, (unsigned long)&route);
+   if( (rc!=0) &&
+       (rc!=-ESRCH) )
+   {
+      DBG("IOCTL Remove route Failed:%d.\n",rc);
+   }
+
+   lo = dev_net(pNet)->loopback_dev;
+   if(lo)
+   {
+      ADD_MAIN_AND_DEFAULT_REOUTE(lo);
+   }
+   ADD_MAIN_AND_DEFAULT_REOUTE(pNet);
+
+   // Add ip rules
+   // ip rule add from all lookup local priority 0
+   // ip rule add from all lookup main priority 1
+   // ip rule add from all lookup default priority 32767
+   gobi_fib_rule(pNet,AF_INET,true,ROUTE_TABLE_LOCAL_PRIORITY);
+   gobi_fib_rule(pNet,AF_INET,true,ROUTE_TABLE_MAIN_PRIORITY);
+   gobi_fib_rule(pNet,AF_INET,true,ROUTE_TABLE_DEFAULT_PRIORITY);
+
+   strncpy(szName, pDev->mpNetDev->net->name,IFNAMSIZ);
+   //Add Route
+   memset(&route, 0, sizeof(route));
+   pdst = (struct sockaddr_in *)(&(route.rt_dst));
+   pgw = (struct sockaddr_in *)(&(route.rt_gateway));
+   pmask = (struct sockaddr_in *)(&(route.rt_genmask));
+
+   /* Make sure we're talking about IP here */
+   pdst->sin_family = AF_INET;
+   pgw->sin_family = AF_INET;
+   pmask->sin_family = AF_INET;
+
+
+   /* Set up the data for removing the default route */
+   pdst->sin_addr.s_addr = 0;
+   pgw->sin_addr.s_addr = pDev->wdsNetResp.IPInfo[eRUNTIME_SETTING_IPv4GW];
+   pmask->sin_addr.s_addr = 0;
+   route.rt_flags = RTF_UP | RTF_GATEWAY;
+   route.rt_metric = MATRIC_OFFSET + 1;
+   route.rt_window = 0;
+   route.rt_dev = szName;
+   rc = gobi_sock_ioctl(PF_INET,pNet,SIOCADDRT, (unsigned long)&route);
+   if(rc!=0)
+   {
+      DBG("IOCTL Add route Failed:%d.\n",rc);
+   }
+   if(-ENETUNREACH == rc)
+   {
+      memset(&route, 0, sizeof(route));
+      pdst = (struct sockaddr_in *)(&(route.rt_dst));
+      pgw = (struct sockaddr_in *)(&(route.rt_gateway));
+      pmask = (struct sockaddr_in *)(&(route.rt_genmask));
+
+      /* Make sure we're talking about IP here */
+      pdst->sin_family = AF_INET;
+      pgw->sin_family = AF_INET;
+      pmask->sin_family = AF_INET;
+
+      //ENETUNREACH 
+      /* try adding a route to gateway first */
+      pdst->sin_addr.s_addr = pDev->wdsNetResp.IPInfo[eRUNTIME_SETTING_IPv4GW];
+      pgw->sin_addr.s_addr = 0;
+      pmask->sin_addr.s_addr = 0xffffffff;
+      route.rt_dev  = szName;
+      route.rt_window = 0;
+      route.rt_metric = MATRIC_OFFSET;
+      route.rt_flags = RTF_UP | RTF_HOST;
+      rc = gobi_sock_ioctl(PF_INET,pNet,SIOCADDRT, (unsigned long)&route);
+      if(rc!=0)
+      {
+         printk(KERN_ERR"IOCTL Add route2 Failed:%d.\n",rc);
+      }
+      else
+      {
+         //Add Gateway
+         memset(&route, 0, sizeof(route));
+         pdst = (struct sockaddr_in *)(&(route.rt_dst));
+         pgw = (struct sockaddr_in *)(&(route.rt_gateway));
+         pmask = (struct sockaddr_in *)(&(route.rt_genmask));
+
+         /* Make sure we're talking about IP here */
+         pdst->sin_family = AF_INET;
+         pgw->sin_family = AF_INET;
+         pmask->sin_family = AF_INET;
+         /* Set up the data for removing the default route */
+         pdst->sin_addr.s_addr = 0;
+         pgw->sin_addr.s_addr = pDev->wdsNetResp.IPInfo[eRUNTIME_SETTING_IPv4GW];
+         pmask->sin_addr.s_addr = 0;
+         route.rt_dev  = szName;
+         route.rt_window = 0;
+         route.rt_metric = MATRIC_OFFSET + 1;
+         route.rt_flags = RTF_UP | RTF_GATEWAY ;
+         rc = gobi_sock_ioctl(PF_INET,pNet,SIOCADDRT, (unsigned long)&route);
+         if(rc!=0)
+         {
+            printk(KERN_ERR"IOCTL Add route3 Failed:%d.\n",rc);
+         }
+      }
+   }
+   /////////////////////////////////////////////////////////
+   strncpy(ifr.ifr_name, szName,IFNAMSIZ);
+   ifr.ifr_addr.sa_family = AF_INET;
+   //Get IP
+   rc = gobi_sock_ioctl(PF_INET,pNet,SIOCGIFADDR, (unsigned long)&ifr);
+   if(rc==0)
+   {
+      val = ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr;
+      IPv4s.obj = val;
+      DBG("%s addr: %pI4\n",ifr.ifr_name,IPv4s.bytes);
+   }
+   else
+   {
+      printk(KERN_ERR"IOCTL Get IP Failed:%d.\n",rc);
+   }
+   strncpy(ifr.ifr_name, szName,IFNAMSIZ);
+   ifr.ifr_addr.sa_family = AF_INET;
+   //Get Netmask
+   rc = gobi_sock_ioctl(PF_INET,pNet,SIOCGIFNETMASK, (unsigned long)&ifr);
+   if(rc==0)
+   {
+      val = ((struct sockaddr_in *)&ifr.ifr_netmask)->sin_addr.s_addr;
+      IPv4s.obj = val;
+      DBG("%s netmask: %pI4\n",ifr.ifr_name,IPv4s.bytes);
+   }
+   else
+   {
+      printk(KERN_ERR"IOCTL Get NETMASK Failed:%d.\n",rc);
+   }
+}
+
+/*===========================================================================
+SetNetDevIPv6
+
+   SetNetDevIPv6 (Private Method)
+
+DESCRIPTION:
+   Set sGobiUSBNet IPv6 Address to net device.
+
+PARAMETERS:
+   pDev             [ I ] - Pointer to sGobiUSBNet.
+
+RETURN VALUE:
+   Nil
+===========================================================================*/
+void SetNetDevIPv6(sGobiUSBNet *pDev)
+{
+   u16 ClientID = 0;
+   int rc = 0;
+   struct ifreq   ifr;
+   struct in6_ifreq ifri6;
+   char szName[IFNAMSIZ]={0};
+   struct net_device *pNet = NULL;
+   struct in6_rtmsg rtm;
+   ipv6_addr IPv6Address;
+   
+   if(!pDev)
+   {
+      return;
+   }
+   if(!pDev->u8AutoIPEnable)
+   {
+      return ;
+   }
+   ClientID = pDev->wdsNetResp.ClientID;
+   memset(szName,0,IFNAMSIZ);
+   strncpy(szName, pDev->mpNetDev->net->name,IFNAMSIZ);
+   memset (&rtm, 0, sizeof (struct in6_rtmsg));
+   if(iGetAdaptorName(pDev,ClientID,&szName[0])!=0)
+   {
+      return ;
+   }
+   if( (pDev->wdsNetResp.type!=2) &&
+       (pDev->wdsNetResp.type!=3) )
+   {
+      printk(KERN_ERR"NOT IPv6: %d\n",pDev->wdsNetResp.type);
+      return ;
+   }
+   
+   gobi_activate_net(pDev->mpNetDev->net);
+   pNet = GetAdaptorByClientID(pDev,ClientID);
+   if(pNet)
+   {
+      gobi_activate_net(pNet);
+   }
+   else
+   {
+      printk(KERN_ERR"!Cannot find adator\n");
+      return ;
+   }
+
+   //Get if_index
+   strncpy(ifr.ifr_name, szName,IFNAMSIZ);
+   ifr.ifr_addr.sa_family = AF_INET6;
+   rc = gobi_sock_ioctl(PF_INET6,pNet, SIOCGIFINDEX, (unsigned long)&ifr);
+   if(rc==0)
+   {
+      DBG("%s ifr_ifindex: %d\n",ifr.ifr_name,ifr.ifr_ifindex);
+   }
+   else
+   {
+      printk(KERN_ERR"Get INDEX failed:%d\n",rc);
+      return ;
+   }
+   //////////////////////////////////////////////////////////
+   //Set IPv6 ADDR
+   ifri6.ifr6_ifindex = ifr.ifr_ifindex;
+   ifri6.ifr6_prefixlen = pDev->wdsNetResp.u8Prefix[eRUNTIME_SETTING_IPv6ADDR];
+   memcpy(&ifri6.ifr6_addr.in6_u.u6_addr8[0],
+      &pDev->wdsNetResp.u8IPAddr[eRUNTIME_SETTING_IPv6ADDR][0],
+      sizeof (struct in6_addr));
+   rc = gobi_sock_ioctl(PF_INET6,pNet,SIOCSIFADDR, (unsigned long)&ifri6);
+   if(rc!=0)
+   {
+      printk(KERN_ERR"Set IPv6 Address failed:%d\n",rc);
+      printk(KERN_ERR"Prefix:0x%02x\n",
+         pDev->wdsNetResp.u8Prefix[eRUNTIME_SETTING_IPv6ADDR]);
+      printk(KERN_ERR"IPv6:%pI6, %pI6\n",
+         pDev->wdsNetResp.u8IPAddr[eRUNTIME_SETTING_IPv6ADDR],
+         ifri6.ifr6_addr.in6_u.u6_addr8);
+      return ;
+   }
+   IPv6Address.prefix = pDev->wdsNetResp.u8Prefix[eRUNTIME_SETTING_IPv6ADDR];
+   memcpy(&IPv6Address.ipv6addr[0],
+         &pDev->wdsNetResp.u8IPAddr[eRUNTIME_SETTING_IPv6ADDR][0],
+         IPV6_ADDR_SIZE_OF_U8_LENGTH);
+   UpdateIPv6Table(
+      pDev,
+      ClientID,
+      IPv6Address);
+   // Add ip rules
+   // ip rule add from all lookup local priority 0
+   // ip rule add from all lookup main priority 1
+   // ip rule add from all lookup default priority 32767
+   gobi_fib_rule(pNet,AF_INET,true,ROUTE_TABLE_LOCAL_PRIORITY);
+   gobi_fib_rule(pNet,AF_INET,true,ROUTE_TABLE_MAIN_PRIORITY);
+   gobi_fib_rule(pNet,AF_INET,true,ROUTE_TABLE_DEFAULT_PRIORITY);
+   
+   //Add route
+   rtm.rtmsg_ifindex = ifr.ifr_ifindex;
+   rtm.rtmsg_flags |= RTF_UP;
+   rtm.rtmsg_metric = 1;
+   memcpy (&rtm.rtmsg_gateway, 
+      &pDev->wdsNetResp.u8IPAddr[eRUNTIME_SETTING_IPv6GATEWAY][0], 
+      sizeof (struct in6_addr));
+   memcpy (&rtm.rtmsg_dst, 
+      &pDev->wdsNetResp.u8IPAddr[eRUNTIME_SETTING_IPv6GATEWAY][0], 
+      sizeof (struct in6_addr));
+   rtm.rtmsg_dst_len = pDev->wdsNetResp.u8Prefix[eRUNTIME_SETTING_IPv6GATEWAY];
+   rc = gobi_sock_ioctl(PF_INET6,pNet,SIOCADDRT, (unsigned long)&rtm);
+   if(rc!=0)
+   {
+      printk(KERN_ERR"Add IPv6 route failed\n");
+      printk(KERN_ERR"Prefix:0x%02x\n",
+         pDev->wdsNetResp.u8Prefix[eRUNTIME_SETTING_IPv6GATEWAY]);
+      printk(KERN_ERR"IPv6:%pI6, %pI6\n",
+         pDev->wdsNetResp.u8IPAddr[eRUNTIME_SETTING_IPv6GATEWAY],
+         ifri6.ifr6_addr.in6_u.u6_addr8);
+   }
+}
+
+/*===========================================================================
+GetIPv4Address
+
+   GetIPv4Address (Private Method)
+
+DESCRIPTION:
+   Extract IPv4 Address Information to sGobiUSBNet.
+
+PARAMETERS:
+   pDev             [ I ] - Pointer to sGobiUSBNet.
+   pBuffer          [ I ] - QMI Message buffer pointer.
+   buffSize         [ I ] - QMI Message buffer length.
+   ClientID         [ I ] - WDS Client ID.
+
+RETURN VALUE:
+   Nil.
+===========================================================================*/
+void GetIPv4Address(
+   sGobiUSBNet *pDev,
+   void *pBuffer,
+   u16 buffSize,
+   u16 ClientID)
+{
+   union
+   {
+      uint32_t obj;
+      uint8_t  bytes[RUNTIME_SETTING_IPV4_TLV_SIZE];
+   } IPv4s;
+   u8 u32TLVArray[eRUNTIME_SETTING_IPv4MAX]={      
+      eRUNTIME_SETTING_IPv4ADDR_TLV,
+      eRUNTIME_SETTING_IPv4GW_TLV,
+      eRUNTIME_SETTING_IPv4NetMask_TLV,
+      eRUNTIME_SETTING_IPv4DNS1_TLV,
+      eRUNTIME_SETTING_IPv4DNS2_TLV};
+
+   char *StringTLVArray[]={
+         eRTstr(eRUNTIME_SETTING_IPv4ADDR),
+         eRTstr(eRUNTIME_SETTING_IPv4GW),
+         eRTstr(eRUNTIME_SETTING_IPv4NetMask),
+         eRTstr(eRUNTIME_SETTING_IPv4DNS1),
+         eRTstr(eRUNTIME_SETTING_IPv4DNS2)};
+   int i = 0;
+   u32 *pData = NULL;
+   u32 u32Data = 0;
+   char szName[IFNAMSIZ]={0};
+   DBG("\n");
+   memset(szName,0,IFNAMSIZ);
+   strncpy(szName, pDev->mpNetDev->net->name,IFNAMSIZ);
+   if(iGetAdaptorName(pDev,ClientID,&szName[0])!=0)
+   {
+      return ;
+   }   
+   
+   pData = &u32Data;
+   for(i=0;i<eRUNTIME_SETTING_IPv4MAX;i++)
+   {
+       DBG("Get %s\n",StringTLVArray[i]);
+      if( GetTLV(
+            pBuffer, 
+            buffSize, 
+            u32TLVArray[i], 
+            (void*)pData, 
+            RUNTIME_SETTING_IPV4_TLV_SIZE ) !=RUNTIME_SETTING_IPV4_TLV_SIZE)
+      {
+         if( (eRUNTIME_SETTING_IPv4DNS1==i) ||
+               (eRUNTIME_SETTING_IPv4DNS2==i) )
+         {
+            DBG("Get %s: Failed\n",StringTLVArray[i]);
+            continue;
+         }
+         else
+         {
+            printk(KERN_ERR"Get %s: Failed\n",StringTLVArray[i]);
+            return ;
+         }
+      }
+      put_unaligned( be32_to_cpu(*pData), pData);
+      IPv4s.obj = u32Data;
+      DBG("%s: %pI4",StringTLVArray[i],IPv4s.bytes);      
+      pDev->wdsNetResp.IPInfo[i]=IPv4s.obj;
+   }
+   pDev->wdsNetResp.ClientID = ClientID;
+   //Clear Value
+   pDev->wdsNetResp.mtu = 0;
+   DBG("Get MTU\n");
+   ExtractMTU(pDev,pBuffer,buffSize);
+}
+
+/*===========================================================================
+GetIPv6Address
+
+   GetIPv6Address (Private Method)
+
+DESCRIPTION:
+   Extract IPv6 Address Information to sGobiUSBNet.
+
+PARAMETERS:
+   pDev             [ I ] - Pointer to sGobiUSBNet.
+   pBuffer          [ I ] - QMI Message buffer pointer.
+   buffSize         [ I ] - QMI Message buffer length.
+   ClientID         [ I ] - WDS Client ID.
+
+RETURN VALUE:
+   Nil.
+===========================================================================*/
+void GetIPv6Address(
+   sGobiUSBNet *pDev,
+   void *pBuffer,
+   u16 buffSize,
+   u16 ClientID)
+{
+   u8 u32TLVArray[]={
+      eRUNTIME_SETTING_IPv6ADDR_TLV,
+      eRUNTIME_SETTING_IPv6GATEWAY_TLV};
+   char *StringTLVArray[]={
+      eRTstr(eRUNTIME_SETTING_IPv6ADDR),
+      eRTstr(eRUNTIME_SETTING_IPv6GATEWAY)};
+   int i = 0;
+   u8 *pData = NULL;
+   char szName[IFNAMSIZ]={0};
+   struct net_device *pNet = NULL;
+   struct sIPv6Data
+   {
+      uint8_t  u8IPAddr[IPV6_ADDR_SIZE_OF_U8_LENGTH];
+      uint8_t  u8Prefix;
+   };
+   union
+   {
+      uint8_t  u8Data[RUNTIME_SETTING_IPV6_TLV_SIZE];
+      struct sIPv6Data IPv6Data;
+   } sIPv6;
+   struct sIPv6Data IPv6Data[eRUNTIME_SETTING_IPv6MAX];
+   memset(&IPv6Data,0,sizeof(IPv6Data));
+   memset(&sIPv6,0,sizeof(sIPv6));
+   memset(szName,0,IFNAMSIZ);
+   strncpy(szName, pDev->mpNetDev->net->name,IFNAMSIZ);
+   if(iGetAdaptorName(pDev,ClientID,&szName[0])!=0)
+   {
+      return ;
+   }
+   gobi_activate_net(pDev->mpNetDev->net);
+   pNet = GetAdaptorByClientID(pDev,ClientID);
+   if(pNet)
+   {
+      gobi_activate_net(pNet);
+   }
+   pData = &sIPv6.u8Data[0];
+   for(i=0;i<eRUNTIME_SETTING_IPv6MAX;i++)
+   {
+      if( GetTLV(
+            pBuffer,
+            buffSize,
+            u32TLVArray[i],
+            (void*)pData,
+            RUNTIME_SETTING_IPV6_TLV_SIZE )!=RUNTIME_SETTING_IPV6_TLV_SIZE)
+      {
+         printk(KERN_ERR "Get %s Failed\n",
+         StringTLVArray[i]);
+         return ;
+      }
+      memcpy(&IPv6Data[i].u8IPAddr[0],
+         &sIPv6.IPv6Data.u8IPAddr[0],
+         IPV6_ADDR_SIZE_OF_U8_LENGTH);
+      memcpy(&pDev->wdsNetResp.u8IPAddr[i],
+         &sIPv6.IPv6Data.u8IPAddr[0],
+         IPV6_ADDR_SIZE_OF_U8_LENGTH);
+      IPv6Data[i].u8Prefix = sIPv6.IPv6Data.u8Prefix;
+      pDev->wdsNetResp.u8Prefix[i] = sIPv6.IPv6Data.u8Prefix;
+
+      DBG("%s Prefix:0x%02x\n",
+         StringTLVArray[i],
+         IPv6Data[i].u8Prefix);
+      DBG("%s IPv6:%pI6\n",
+         StringTLVArray[i],
+         IPv6Data[i].u8IPAddr);
+   }
+   ExtractMTU(pDev,pBuffer,buffSize);
+}
+
+/*===========================================================================
+PrintActiveWDSCID
+
+   PrintActiveWDSCID (Private Method)
+
+DESCRIPTION:
+   Print reference WDS client ID.
+
+PARAMETERS:
+   pDev             [ I ] - Pointer to sGobiUSBNet.
+   WDSClientID      [ I ] - WDS Client ID.
+
+RETURN VALUE:
+   Nil.
+===========================================================================*/
+void PrintActiveWDSCID(sGobiUSBNet *pDev  ,u16 WDSClientID)
+{
+   if(pDev)
+   {
+      if(pDev->WDSClientID[eWDSCALLBACK_IPv4] == WDSClientID)
+      {
+         DBG("IPv4 WDSClientID: 0x%04x\n",WDSClientID);
+         return ;
+      }
+      else if(pDev->WDSClientID[eWDSCALLBACK_IPv6] == WDSClientID)
+      {
+         DBG("IPv6 WDSClientID: 0x%04x\n",WDSClientID);
+         return ;
+      }
+      else
+      {
+         int i =0 ;
+         for(i=0;i<MAX_MUX_NUMBER_SUPPORTED;i++)
+         {
+            if(pDev->QMUXWDSCientID[i]==WDSClientID)
+            {
+               DBG("MUX %d WDSClientID: 0x%04x\n",i,WDSClientID);
+               return ;
+            }
+         }
+      }
+   }
+   DBG("UNKNOWN WDSClientID: 0x%04x\n",WDSClientID);
+   PRINT_ALL_WDS_IDs(pDev);
+   return ;
+}
+
+/*===========================================================================
+NetDevCallback
+
+   NetDevCallback (Private Method)
+
+DESCRIPTION:
+   Callback fucntion to assign IP address(es) to net device.
+
+PARAMETERS:
+   w             [ I ] - Pointer to work_struct.
+
+RETURN VALUE:
+   Nil.
+===========================================================================*/
+static void NetDevCallback(struct work_struct *w)
+{
+   struct delayed_work *dwork;
+   sGobiUSBNet *pGobiDev = NULL;
+   dwork = to_delayed_work(w);
+   pGobiDev = container_of(dwork, sGobiUSBNet, dwNetDev);
+   if(pGobiDev!=NULL)
+   {
+      if(pGobiDev->wdsNetState == eNetDev_WQ_STATE_HANDLE_REQ)
+      {
+         SendGetRuntimesettings(pGobiDev,pGobiDev->wdsNetReq.ClientID);
+      }
+      else if(pGobiDev->wdsNetState == eNetDev_WQ_STATE_HANDLE_RESP)
+      {
+         if( (pGobiDev->wdsNetResp.type==0) ||
+            (pGobiDev->wdsNetResp.type==3) )
+         {
+            SetNetDevIPv4(pGobiDev);
+         }
+         if( (pGobiDev->wdsNetResp.type==2) ||
+            (pGobiDev->wdsNetResp.type==3) )
+         {
+            SetNetDevIPv6(pGobiDev);
+         }
+      }
+      pGobiDev->wdsNetState = eNetDev_WQ_STATE_Unknown;
+      //Assign Invalid type
+      pGobiDev->wdsNetReq.type = 0xff;
+   }
+   else
+   {
+      DBG("pGobiDev NULL\n");
+   }
+}
+
+/*===========================================================================
+GobiCancelwqNetDevWorkQueue
+
+   GobiCancelwqNetDevWorkQueue (Private Method)
+
+DESCRIPTION:
+   Cancel device NetDevCallback work queue.
+
+PARAMETERS:
+   pGobiDev          [ I ] - pointer to sGobiUSBNet.
+RETURN VALUE:
+    none
+===========================================================================*/
+void GobiCancelwqNetDevWorkQueue(sGobiUSBNet *pGobiDev)
+{
+   if( (pGobiDev != NULL) &&
+      (pGobiDev->wqNetDev != NULL))
+   {
+      DBG("%s\n",__FUNCTION__);
+      GobiCancelDelayWorkWorkQueue(pGobiDev,
+         pGobiDev->wqNetDev,
+         &pGobiDev->dwNetDev);
+   }
+}
+
+/*===========================================================================
+gobiProcessNetDev
+
+   gobiProcessNetDev (Private Method)
+
+DESCRIPTION:
+   Add delayed work to wqNetDev.
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to sGobiUSBNet pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+void gobiProcessNetDev(sGobiUSBNet *pGobiDev)
+{
+   if(!pGobiDev)
+      return ;
+   if(!pGobiDev->u8AutoIPEnable)
+      return ;
+   INIT_DELAYED_WORK(&pGobiDev->dwNetDev,
+            NetDevCallback);
+   queue_delayed_work(pGobiDev->wqNetDev, &pGobiDev->dwNetDev, 0);
+}
+
+/*===========================================================================
+ResetReadEndpoints
+
+   ResetReadEndpoints (Private Method)
+
+DESCRIPTION:
+   Do ResetCtrlReadEndpoints and ResetRcvReadEndpoints.
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to sGobiUSBNet pointer
+RETURN VALUE:
+   0 - Success.
+   negative - When error occour.
+===========================================================================*/
+
+int ResetReadEndpoints( sGobiUSBNet * pDev )
+{
+   int iRet = 0;
+   iRet = ResetCtrlReadEndpoints(pDev);
+   if(iRet == 0)
+   {
+      iRet = ResetRcvReadEndpoints(pDev);
+   }
+   return iRet;
+}
+
+/*===========================================================================
+ResetReadEndpoints
+
+   ResetCtrlReadEndpoints (Private Method)
+
+DESCRIPTION:
+   Reset control read enpoint.
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to sGobiUSBNet pointer
+RETURN VALUE:
+   0 - Success.
+   negative - When error occour.
+===========================================================================*/
+
+int ResetCtrlReadEndpoints( sGobiUSBNet * pDev )
+{
+   struct usb_endpoint_descriptor *pendp;
+   pendp = GetEndpoint(pDev->mpIntf, USB_ENDPOINT_XFER_INT, USB_DIR_IN);
+   if(pendp!=NULL)
+   {
+      usb_reset_endpoint(pDev->mpNetDev->udev,0);
+      usb_clear_halt(pDev->mpNetDev->udev,
+         usb_rcvctrlpipe( pDev->mpNetDev->udev, 0 ));
+      return 0;
+   }
+   return -ENOMEM;
+}
+
+/*===========================================================================
+ResetRcvReadEndpoints
+
+   ResetRcvReadEndpoints (Private Method)
+
+DESCRIPTION:
+   Reset receive interrupt enpoint.
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to sGobiUSBNet pointer
+RETURN VALUE:
+   0 - Success.
+   negative - When error occour.
+===========================================================================*/
+
+int ResetRcvReadEndpoints( sGobiUSBNet * pDev )
+{
+   struct usb_endpoint_descriptor *pendp;
+   pendp = GetEndpoint(pDev->mpIntf, USB_ENDPOINT_XFER_INT, USB_DIR_IN);
+   if(pendp!=NULL)
+   {
+      usb_reset_endpoint(pDev->mpNetDev->udev,
+         pendp->bEndpointAddress);
+      usb_clear_halt(pDev->mpNetDev->udev,
+         usb_rcvintpipe( pDev->mpNetDev->udev,
+         pendp->bEndpointAddress));
+      return 0;
+   }
+   return -ENOMEM;
+}
+
+#ifdef CONFIG_ANDROID
+void gobiUnLockSystemSleepByTime(sGobiUSBNet *pGobiDev,int delay)
+{
+   WLDEBUG( "%s\n",__FUNCTION__);
+   GobiCancelUnLockSystemSleepWorkQueue(pGobiDev);
+   INIT_DELAYED_WORK(&pGobiDev->dwUnLockSystemSleep,
+            ProcessUnLockSystemSleepFunction);
+   queue_delayed_work(pGobiDev->wqUnLockSystemSleep, &pGobiDev->dwUnLockSystemSleep, delay);
+}
+#endif
+
+int StayAwakeOnService(void *pBuffer,sGobiUSBNet *pGobiDev)
+{
+   sQMUX_SRV *pQMux;
+   pQMux = (sQMUX_SRV*)pBuffer;
+   if(pQMux->qmux.mQMIService==QMIWDS)
+   {
+      if(WDS_START_NET==pQMux->mCMD)
+      {
+         #ifdef CONFIG_ANDROID
+         extern int qmi_service_awake_timeout;
+         unsigned long ref_time = DEFAULT_SERVICE_AWAKE_TIMEOUT;
+         DBG("SVC ID:0x%02x NO:0x%02x CMD:0x%04x \n",
+            pQMux->qmux.mQMIService,
+            pQMux->qmux.mQMIClientID,
+            pQMux->mCMD);
+         if(qmi_service_awake_timeout>=0)
+         {
+            ref_time = round_jiffies_relative(qmi_service_awake_timeout*HZ);
+         }
+         if(pGobiDev)
+         {
+            struct wakeup_source *ws = pGobiDev->ws;
+            PRINT_WS_LOCK(ws);
+            if(!ws->active)
+            {
+               DBG( "expire in %d ms\n",
+                  jiffies_to_msecs(ref_time));
+               gobiLockSystemSleep(pGobiDev);
+               gobiUnLockSystemSleepByTime(pGobiDev,ref_time);
+            }
+            else if( time_after_eq(ref_time, ws->timer_expires))
+            {
+               DBG( "expire in %d ms\n",
+                  jiffies_to_msecs(ref_time - ws->timer_expires));
+               gobiLockSystemSleep(pGobiDev);
+               gobiUnLockSystemSleepByTime(pGobiDev,ref_time - ws->timer_expires);
+            }
+         }
+         #endif
+      }
+   }
+   return 0;
+}
+/*===========================================================================
+ProcessSetPowerSaveMode
+
+   ProcessSetPowerSaveMode (Private Method)
+
+DESCRIPTION:
+   Work queue handler to SetPowerSaveMode.
+
+PARAMETERS:
+   w                 [ I ] - Pointer to work_struct pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+static void ProcessSetPowerSaveMode(struct work_struct *w)
+{
+   struct delayed_work *dwork;
+   sGobiUSBNet *pGobiDev = NULL;
+   dwork = to_delayed_work(w);
+   pGobiDev = container_of(dwork, sGobiUSBNet, dwSetPowerSaveMode);
+   if(pGobiDev!=NULL)
+   {
+      DBG("\n");
+      if(SetPowerSaveMode(pGobiDev,0)<0)
+      {
+         printk(KERN_ERR" Resume Set Power Save Mode 0 error 1\n");
+         //Disable data traffic now
+         #ifdef CONFIG_ANDROID
+         SetCurrentSuspendStat(pGobiDev,1);
+         GobiClearDownReason( pGobiDev, DRIVER_SUSPENDED );
+         netif_carrier_off( pGobiDev->mpNetDev->net );
+         return ;
+         #endif
+      }
+      else
+      {
+         #ifdef CONFIG_ANDROID
+         printk(KERN_INFO"Set Power Save Mode 0\n" );
+         #else
+         DBG( "Set Power Save Mode 0\n" );
+         #endif
+         #ifdef CONFIG_PM
+         SetCurrentSuspendStat(pGobiDev,0);
+         #endif
+         #ifdef CONFIG_ANDROID
+         SetTxRxStat(pGobiDev,RESUME_RX_OKAY);
+         SetTxRxStat(pGobiDev,RESUME_TX_OKAY);
+         #endif
+      }
+   }
+   else
+   {
+      DBG("pGobiDev NULL\n");
+   }
+}
+
+/*===========================================================================
+GobiCancelSetPowerSaveModeWorkQueue
+
+   GobiCancelSetPowerSaveModeWorkQueue (Private Method)
+
+DESCRIPTION:
+   Cancel device SetPowerSaveMode work queue.
+
+PARAMETERS:
+   pGobiDev          [ I ] - pointer to sGobiUSBNet.
+RETURN VALUE:
+    none
+===========================================================================*/
+void GobiCancelSetPowerSaveModeWorkQueue(sGobiUSBNet *pGobiDev)
+{
+   if( (pGobiDev != NULL) && 
+      (pGobiDev->wqSetPowerSaveMode != NULL))
+   {
+      DBG("%s\n",__FUNCTION__);
+      GobiCancelDelayWorkWorkQueueWithoutUSBLockDevice(pGobiDev,
+         pGobiDev->wqSetPowerSaveMode,
+         &pGobiDev->dwSetPowerSaveMode);
+   }
+}
+
+/*===========================================================================
+gobiSetPowerSaveMode
+
+   gobiSetPowerSaveMode (Private Method)
+
+DESCRIPTION:
+   Add delayed work to wqSetPowerSaveMode.
+
+PARAMETERS:
+   pGobiDev                 [ I ] - Pointer to sGobiUSBNet pointer
+RETURN VALUE:
+   none
+===========================================================================*/
+void gobiSetPowerSaveMode(sGobiUSBNet *pGobiDev)
+{
+   GobiCancelSetPowerSaveModeWorkQueue(pGobiDev);
+   INIT_DELAYED_WORK(&pGobiDev->dwSetPowerSaveMode,
+            ProcessSetPowerSaveMode);
+   queue_delayed_work(pGobiDev->wqSetPowerSaveMode, &pGobiDev->dwSetPowerSaveMode, 0);
 }
 

@@ -90,7 +90,7 @@ POSSIBILITY OF SUCH DAMAGE.
 //---------------------------------------------------------------------------
 
 // Version Information
-#define DRIVER_VERSION "2019-11-22/SWI_2.39"
+#define DRIVER_VERSION "2020-08-17/SWI_2.42"
 #define DRIVER_AUTHOR "Qualcomm Innovation Center"
 #define DRIVER_DESC "GobiSerial"
 
@@ -103,6 +103,17 @@ POSSIBILITY OF SUCH DAMAGE.
 #define CONTROL_DTR                     0x01
 #define CONTROL_RTS                     0x02
 
+#define RETURN_ENODEV_WHEN_NULL_PTR(ptr)\
+if(unlikely(!ptr))\
+{\
+   return -ENODEV;\
+}
+
+#define RETURN_WHEN_NULL_PTR(ptr)\
+if(unlikely(!ptr))\
+{\
+   return;\
+}
 
 // Debug flag
 static int debug;
@@ -213,14 +224,6 @@ int GobiSerialResume( struct usb_interface * pIntf );
 #endif
 void stop_read_write_urbs(struct usb_serial *serial);
 
-void gobi_set_throttled(struct usb_serial_port *port);
-void gobi_clear_throttled(struct usb_serial_port *port);
-
-void gobi_throttle(struct tty_struct *tty);
-void gobi_unthrottle(struct tty_struct *tty);
-
-
-
 #define MDM9X15_DEVICE(vend, prod) \
 	USB_DEVICE(vend, prod), \
 	.driver_info = BIT(1) | BIT(8) | BIT(10) | BIT(11)
@@ -326,6 +329,18 @@ static struct usb_device_id GobiVIDPIDTable[] =
       .driver_info = BIT(1) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
    },
 
+   /* Sierra Wireless QMI RC51xx APP*/
+   { USB_DEVICE(0x1199, 0x9081),
+    /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(4) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+
+   /* Sierra Wireless QMI RC51xx BOOT*/
+   { USB_DEVICE(0x1199, 0x9080),
+      /* blacklist the interface */
+      .driver_info = BIT(1) | BIT(4) | BIT(5) | BIT(6) | BIT(8) | BIT(10) | BIT(11) | BIT(12) | BIT(13)
+   },
+
    {G3K_DEVICE(0x1199, 0x9010)},
    {G3K_DEVICE(0x1199, 0x9011)},
    {G3K_DEVICE(0x1199, 0x9012)},
@@ -363,8 +378,6 @@ struct sierra_port_private {
    int iGPSStartState;
    unsigned long ulExpires;
    int iUsb3ZlpEnable;
-#define PORT_THROTTLED 0
-   unsigned long flags;
 };
 
 int gobi_usb_serial_generic_resume(struct usb_interface *intf)
@@ -420,15 +433,21 @@ static int Gobi_calc_interface(struct usb_serial *serial)
 
 static int Gobi_send_setup(struct usb_serial_port *port)
 {
-   struct usb_serial *serial = port->serial;
-   struct sierra_port_private *portdata;
+   struct usb_serial *serial = NULL;
+   struct sierra_port_private *portdata = NULL;
    __u16 interface = 0;
    int val = 0;
    int retval;
 
+   RETURN_ENODEV_WHEN_NULL_PTR(port);
+
    dev_dbg(&port->dev, "%s\n", __func__);
+   serial = port->serial;
+
+   RETURN_ENODEV_WHEN_NULL_PTR(serial);
 
    portdata = usb_get_serial_port_data(port);
+   RETURN_ENODEV_WHEN_NULL_PTR(portdata);
 
    if (portdata->dtr_state)
       val |= CONTROL_DTR;
@@ -463,10 +482,16 @@ static int Gobi_send_setup(struct usb_serial_port *port)
 
 static void Gobi_dtr_rts(struct usb_serial_port *port, int on)
 {
-   struct usb_serial *serial = port->serial;
-   struct sierra_port_private *portdata;
+   struct usb_serial *serial = NULL;
+   struct sierra_port_private *portdata = NULL;
 
+   RETURN_WHEN_NULL_PTR(port);
+
+   serial = port->serial;
+   RETURN_WHEN_NULL_PTR(serial);
    portdata = usb_get_serial_port_data(port);
+   RETURN_WHEN_NULL_PTR(portdata);
+
    portdata->rts_state = on;
    portdata->dtr_state = on;
 
@@ -507,6 +532,9 @@ static int Gobi_startup(struct usb_serial *serial)
    struct sierra_port_private *portdata = NULL;
    struct gobi_serial_intf_private *intfdata = NULL;
    int i;
+
+   RETURN_ENODEV_WHEN_NULL_PTR(serial);
+   RETURN_ENODEV_WHEN_NULL_PTR(serial->dev)
 
    dev_dbg(&serial->dev->dev, "%s\n", __func__);
 
@@ -550,9 +578,14 @@ static int Gobi_startup(struct usb_serial *serial)
 int Gobi_portremove(struct usb_serial_port *port)
 {
    
-   struct sierra_port_private *portdata = usb_get_serial_port_data(port);
+   struct sierra_port_private *portdata = NULL;
    struct gobi_serial_intf_private *intfdata = NULL;
    u8 port_number;
+
+   // Test parameters
+   RETURN_ENODEV_WHEN_NULL_PTR(port);
+
+   portdata = usb_get_serial_port_data(port);
    usb_set_serial_port_data(port, NULL);
    intfdata = usb_get_serial_data(port->serial);
    #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,11,0 ))
@@ -747,8 +780,6 @@ static struct usb_serial_driver gGobiDevice =
     .reset_resume = GobiUSBSerialResetResume,
     #endif
  #endif
-    .throttle           = gobi_throttle,
-    .unthrottle         = gobi_unthrottle,
 };
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,4,0 ))
@@ -995,9 +1026,6 @@ int GobiOpen(
 
    DBG( "\n" );
 
-   portdata = usb_get_serial_port_data(pPort);
-   portdata->isClosing = 0;
-
    // Test parameters
    if ( (pPort == NULL)
    ||   (pPort->serial == NULL)
@@ -1008,7 +1036,10 @@ int GobiOpen(
       DBG( "invalid parameter\n" );
       return -EINVAL;
    }
-   gobi_clear_throttled(pPort);
+   portdata = usb_get_serial_port_data(pPort);
+   RETURN_ENODEV_WHEN_NULL_PTR(portdata)
+
+   portdata->isClosing = 0;
    
    // Is this the GPS port?
    if ((IsGPSPort(pPort)) == true)
@@ -1145,9 +1176,6 @@ void GobiClose( struct usb_serial_port * pPort )
 
    DBG( "\n" );
 
-   portdata = usb_get_serial_port_data(pPort);
-   portdata->isClosing = 1;
-
    // Test parameters
    if ( (pPort == NULL)
    ||   (pPort->serial == NULL)
@@ -1158,7 +1186,10 @@ void GobiClose( struct usb_serial_port * pPort )
       DBG( "invalid parameter\n" );
       return;
    }
+   portdata = usb_get_serial_port_data(pPort);
+   RETURN_WHEN_NULL_PTR(portdata)
 
+   portdata->isClosing = 1;
    // Is this the GPS port?
    if ((IsGPSPort(pPort)) == true)
    {
@@ -1275,17 +1306,28 @@ RETURN VALUE:
 ===========================================================================*/
 static void GobiReadBulkCallback( struct urb * pURB )
 {
-   struct sierra_port_private *portdata;
-   struct usb_serial_port * pPort = pURB->context;
-   struct tty_struct * pTTY = pPort->tty;
+   struct sierra_port_private *portdata = NULL;
+   struct usb_serial_port *pPort = NULL;
+   struct tty_struct *pTTY = NULL;
    int nResult;
    int nRoom = 0;
    unsigned int pipeEP;
-   int status = urb->status;
+   int status = -1;
+
+   // Test parameters
+   RETURN_WHEN_NULL_PTR(pURB)
+
+   status = pURB->status;
+   pPort = pURB->context;
+   RETURN_WHEN_NULL_PTR(pPort)
+
+   pTTY = pPort->tty;
+   RETURN_WHEN_NULL_PTR(pTTY)
 
    DBG( "port %d\n", pPort->number );
-
    portdata = usb_get_serial_port_data(pPort);
+   RETURN_WHEN_NULL_PTR(portdata)
+
    if (portdata->isClosing)
    {
        /* ignore bulk callback when port is closing */
@@ -1343,11 +1385,17 @@ static void GobiReadBulkCallback( struct urb * pURB )
 void GobiReadBulkCallback(struct urb *urb)
 {   
     struct sierra_port_private *portdata;
-    struct usb_serial_port *port = urb->context;
-    unsigned char *data = urb->transfer_buffer;
+    struct usb_serial_port *port = NULL;
+    unsigned char *data = NULL;
     unsigned long flags;
-    int status = urb->status;
+    int status = -1;
     int i;
+
+    RETURN_WHEN_NULL_PTR(urb);
+    port = urb->context;
+    data = urb->transfer_buffer;
+    status = urb->status;
+    RETURN_WHEN_NULL_PTR(port);
 
     #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,3,0 ))
     for (i = 0; i < ARRAY_SIZE(port->read_urbs); ++i) {
@@ -1361,6 +1409,8 @@ void GobiReadBulkCallback(struct urb *urb)
     /* only ignore bulk callback after the bit of read_urbs_free was set,
        so that the port can be accessed later on */
     portdata = usb_get_serial_port_data(port);
+    RETURN_WHEN_NULL_PTR(portdata);
+
     if (portdata->isClosing)
     {
         /* ignore bulk callback when port is closing */
@@ -1392,8 +1442,12 @@ void GobiReadBulkCallback(struct urb *urb)
 
     /* Throttle the device if requested by tty */
     spin_lock_irqsave(&port->lock, flags);
-
-    if (!test_bit(PORT_THROTTLED, &portdata->flags))
+    #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,2,0 ))
+    if (!test_bit(USB_SERIAL_THROTTLED, &port->flags))
+    #else
+    port->throttled = port->throttle_req;
+    if (!port->throttled)
+    #endif
     {
         spin_unlock_irqrestore(&port->lock, flags);
         #if (LINUX_VERSION_CODE >= KERNEL_VERSION( 3,3,0 ))
@@ -1472,8 +1526,11 @@ void stop_read_write_urbs(struct usb_serial *serial)
 
         /* Stop reading/writing urbs */
         for (i = 0; i < serial->num_ports; ++i) {
-                port = serial->port[i];
+             port = serial->port[i];
+             if(port)
+             {
                 gobi_stop_rx_urbs(port);
+             }
         }
 }
 
@@ -1502,10 +1559,13 @@ RETURN VALUE:
 ===========================================================================*/
 int GobiSerialResume( struct usb_interface * pIntf )
 {
-   struct usb_serial * pSerial = usb_get_intfdata( pIntf );
+   struct usb_serial * pSerial = NULL;
    struct usb_serial_port * pPort;
    int portIndex, errors, nResult;
 
+   RETURN_ENODEV_WHEN_NULL_PTR(pIntf);
+
+   pSerial = usb_get_intfdata( pIntf );
    if (pSerial == NULL)
    {
       DBG( "no pSerial\n" );
@@ -1552,13 +1612,21 @@ int GobiSerialResume( struct usb_interface * pIntf )
 int GobiUSBSerialResetResume(struct usb_serial *serial)
 {
     DBG( "\n" );
+    RETURN_ENODEV_WHEN_NULL_PTR(serial);
+
     return GobiUSBSerialResume(serial);
 }
 
 int GobiUSBSerialResume(struct usb_serial *serial)
 {
-   struct gobi_serial_intf_private *intfdata = usb_get_serial_data(serial);
+   struct gobi_serial_intf_private *intfdata = NULL;
    DBG( "\n" );
+   RETURN_ENODEV_WHEN_NULL_PTR(serial);
+
+   intfdata = usb_get_serial_data(serial);
+
+   RETURN_ENODEV_WHEN_NULL_PTR(intfdata);
+
    spin_lock_irq(&intfdata->susp_lock);
    intfdata->suspended = 0;
    spin_unlock_irq(&intfdata->susp_lock);
@@ -1568,8 +1636,14 @@ int GobiUSBSerialResume(struct usb_serial *serial)
 
 int GobiUSBSerialSuspend(struct usb_serial *pDev, pm_message_t powerEvent)
 {
-   struct gobi_serial_intf_private *intfdata = usb_get_serial_data(pDev);
+   struct gobi_serial_intf_private *intfdata = NULL;
    DBG( "\n" );
+   RETURN_ENODEV_WHEN_NULL_PTR(pDev);
+
+   intfdata = usb_get_serial_data(pDev);
+
+   RETURN_ENODEV_WHEN_NULL_PTR(intfdata);
+
    spin_lock_irq(&intfdata->susp_lock);
    intfdata->suspended = 1;
    spin_unlock_irq(&intfdata->susp_lock);
@@ -1581,6 +1655,8 @@ int GobiUSBSerialSuspend(struct usb_serial *pDev, pm_message_t powerEvent)
 void GobiUSBSerialDisconnect(struct usb_serial *serial)
 {
    DBG( "\n" );
+   RETURN_WHEN_NULL_PTR(serial);
+
    stop_read_write_urbs(serial);
    return ;
 }
@@ -1669,6 +1745,7 @@ static void __exit GobiExit( void )
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 3,2,0 ))
 static inline int usb_endpoint_maxp(const struct usb_endpoint_descriptor *epd)
 {
+   RETURN_ENODEV_WHEN_NULL_PTR(epd);
    return le16_to_cpu(epd->wMaxPacketSize);
 }
 #endif
@@ -1678,6 +1755,10 @@ static inline struct usb_host_endpoint *
 usb_pipe_endpoint(struct usb_device *dev, unsigned int pipe)
 {
    struct usb_host_endpoint **eps;
+   if(!dev)
+   {
+      return NULL;
+   }
    eps = usb_pipein(pipe) ? dev->ep_in : dev->ep_out;
    return eps[usb_pipeendpoint(pipe)];
 }
@@ -1797,59 +1878,6 @@ int gobi_usb_bulk_msg(struct usb_device *usb_dev, unsigned int pipe,
       pBuf = NULL;
    }
    return ret;
-}
-
-void gobi_set_throttled(struct usb_serial_port *port)
-{
-   struct sierra_port_private *portdata;
-   unsigned long flags;
-   if(port)
-   {
-      portdata = usb_get_serial_port_data(port);
-      if(portdata)
-      {
-         spin_lock_irqsave(&port->lock, flags);
-         set_bit(PORT_THROTTLED, &portdata->flags);
-         spin_unlock_irqrestore(&port->lock, flags);
-      }
-   }
-   return ;
-}
-
-void gobi_clear_throttled(struct usb_serial_port *port)
-{
-   struct sierra_port_private *portdata;
-   unsigned long flags;
-   if(port)
-   {
-      portdata = usb_get_serial_port_data(port);
-      if(portdata)
-      {
-         spin_lock_irqsave(&port->lock, flags);
-         clear_bit(PORT_THROTTLED, &portdata->flags);
-         spin_unlock_irqrestore(&port->lock, flags);
-      }
-   }
-   return ;
-}
-
-void gobi_throttle(struct tty_struct *tty)
-{
-   struct usb_serial_port *port = tty->driver_data;
-   gobi_set_throttled(port);
-}
-
-void gobi_unthrottle(struct tty_struct *tty)
-{
-   struct usb_serial_port *port = tty->driver_data;
-   int result = 0;
-   gobi_clear_throttled(port);
-   /* Submit the urb to read from the port. */
-   result = usb_submit_urb(port->interrupt_in_urb, GFP_ATOMIC);
-  if (result < 0)
-   {
-      DBG( "error %d\n", result );
-   }
 }
 
 // Calling kernel module to init our driver
